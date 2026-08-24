@@ -80,12 +80,13 @@ NTAPI="$ROOT/tests/ntapi"
 BUILD="$ROOT/build/tests"
 MODE="${1:-}"
 # The optional subtest filter (see the header). Only the two ntapi legs and
-# the winetest leg take one — every other mode's arguments mean something
+# the two winetest legs take one — every other mode's arguments mean something
 # else (`fuzz` forwards its own), so the filter stays empty for them and they
 # behave exactly as before. The ntapi legs filter tests/ntapi base names; the
-# winetest leg filters manifest pairs (wtest_matches below).
+# winetest legs filter manifest pairs (wtest_matches below), each over its own
+# manifest.
 SUBTESTS=()
-case "$MODE" in oracle|proskrnl|winetest) SUBTESTS=("${@:2}") ;; esac
+case "$MODE" in oracle|proskrnl|winetest|winetest-gui) SUBTESTS=("${@:2}") ;; esac
 
 # The mingw for the three helper .exes this file still compiles itself
 # (fontsmoke/fontdiff/audiosmoke). It is NOT the compiler for the 165 ntapi
@@ -1478,13 +1479,56 @@ winetest_gui() {
     wtest_parse_manifest "$manifest" || return 2
     local testexe="$ROOT/third_party/wine/dlls/user32/tests/x86_64-windows/user32_test.exe"
 
+    # The $SUBTESTS filter, the CUI leg's rule in the CUI leg's words: a
+    # pattern matching no pair is a TYPO rather than an empty run, and a
+    # filtered run says on stdout that it is not the gate. Without it the only
+    # way to look at ONE pair here was to pay for the whole active list, and
+    # the active list contains an hour-long msg run — so working a parked pair
+    # (uncomment it, measure it, re-park or activate it) meant an hour per
+    # iteration.
+    local i pat hit
+    if (( ${#SUBTESTS[@]} )); then
+        for pat in "${SUBTESTS[@]}"; do
+            hit=0
+            for ((i = 0; i < ${#WTEST_KEYS[@]}; i++)); do
+                wtest_matches "$pat" "${WTEST_EXES[i]}" "${WTEST_SUBS[i]}" && { hit=1; break; }
+            done
+            if (( ! hit )); then
+                echo "run.sh: no winetest-gui pair matches '$pat'. Active pairs:" >&2
+                for ((i = 0; i < ${#WTEST_KEYS[@]}; i++)); do
+                    echo "  $(wtest_module "${WTEST_EXES[i]}"):${WTEST_SUBS[i]}"
+                done >&2
+                echo "  (a PARKED pair is not active — uncomment it in $manifest first)" >&2
+                exit 2
+            fi
+        done
+        local selExes=() selSubs=() selKeys=() selBudgets=() selSecs=()
+        for ((i = 0; i < ${#WTEST_KEYS[@]}; i++)); do
+            for pat in "${SUBTESTS[@]}"; do
+                if wtest_matches "$pat" "${WTEST_EXES[i]}" "${WTEST_SUBS[i]}"; then
+                    selExes+=("${WTEST_EXES[i]}"); selSubs+=("${WTEST_SUBS[i]}")
+                    selKeys+=("${WTEST_KEYS[i]}"); selBudgets+=("${WTEST_BUDGETS[i]}")
+                    selSecs+=("${WTEST_SECS[i]}")
+                    break
+                fi
+            done
+        done
+        WTEST_EXES=("${selExes[@]}"); WTEST_SUBS=("${selSubs[@]}")
+        WTEST_KEYS=("${selKeys[@]}"); WTEST_BUDGETS=("${selBudgets[@]}")
+        WTEST_SECS=("${selSecs[@]}")
+        echo "== winetest-gui: subset run (${SUBTESTS[*]}, ${#WTEST_KEYS[@]} pairs)" \
+             "— NOT the gate; run unfiltered for a verdict =="
+    fi
+    local tag=""
+    (( ${#SUBTESTS[@]} )) && tag="-subset"
+
     # --- oracle half first (minutes), then the kernel half (an hour under
     # TCG). It runs THE MANIFEST'S ACTIVE LIST, the same pairs the kernel half
     # sweeps, so activating a pair cannot leave a graded pair whose spec side
     # never ran. Its verdict does not gate the kernel half: a red leg must not
     # hide the leg behind it, and the number the ratchet wants is measured
     # either way. Both are folded into the leg's exit status at the end.
-    local oracleFail=0 i
+    local oracleFail=0
     for ((i = 0; i < ${#WTEST_KEYS[@]}; i++)); do
         winetest_gui_oracle "$testexe" "${WTEST_SUBS[i]}" "${WTEST_SECS[i]}" || oracleFail=1
     done
@@ -1494,13 +1538,17 @@ winetest_gui() {
     # an image of its own, whose payload was a hand-copied subset of the
     # winetest image's — the kind of second list that drifts.
     local img
-    img="$(test_image_copy "$ROOT/build/tests/winetest-gui.hdd")" || exit 1
+    img="$(test_image_copy "$ROOT/build/tests/winetest-gui$tag.hdd")" || exit 1
 
     # 2 GiB: no COW and this boot holds the server, conhost, a multi-MB
     # test binary and its spawned children resident at once.
-    local log="$ROOT/build/tests/winetest-gui-serial.log"
+    # The GUEST filter is the exact pair list this boot must run — the keys
+    # themselves, not the user's query, for the CUI leg's reason: a
+    # `<module>:<subtest>` key matches exactly its own pair, so which pairs run
+    # is the harness's decision reaching the guest AS a decision.
+    local log="$ROOT/build/tests/winetest-gui$tag-serial.log"
     LOG="$log" MEM=2048M PASS_RE="\[KTEST\] wtest done" TIMEOUT="${TIMEOUT:-3600}" \
-        GUEST_SERIAL=1 GUEST_LEG=winetest-gui \
+        GUEST_SERIAL=1 GUEST_LEG=winetest-gui GUEST_SUBTESTS="${WTEST_KEYS[*]}" \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
 
     # msg.c's own assertion text, replayed out of the console screen diff
@@ -1508,7 +1556,7 @@ winetest_gui() {
     # kernel's line below — but a budget above zero is a list of named
     # divergences, and this file is the only place their names survive.
     "$ROOT/tools/unscreen.py" --grep 'Test (failed|succeeded)|marked todo|unhandled exception' \
-        "$log" > "$ROOT/build/tests/winetest-gui-msg.log" 2>/dev/null || true
+        "$log" > "$ROOT/build/tests/winetest-gui$tag-msg.log" 2>/dev/null || true
 
     # The sweep must have REACHED ITS END having selected exactly the pairs
     # this manifest activates. The verdict lines alone do not say that:
@@ -4176,7 +4224,7 @@ case "$MODE" in
     winefbunit) winefbunit ;;
     resolvunit) resolvunit ;;
     winetest-gui) winetest_gui ;;
-    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|cui9|net|net3|wow64|fatinterop|fatstress|tornwrite|gui|audio|wow64aud|gui2|gui3|gui4|gui5|gui5con|wow64gui|gui6|winefbunit|resolvunit|winetest-gui}" >&2
+    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|cui9|net|net3|wow64|fatinterop|fatstress|tornwrite|gui|audio|wow64aud|gui2|gui3|gui4|gui5|gui5con|wow64gui|gui6|winefbunit|resolvunit|winetest-gui [pair...]}" >&2
        echo "       subtest = a tests/ntapi test's base name, or a glob over base names" >&2
        echo "       pair    = a winetest <module>[:<subtest>] (ntdll, printf, ntdll:env), or a glob" >&2
        echo "                 (iteration only — the gate is the unfiltered run)" >&2
