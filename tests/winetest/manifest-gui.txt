@@ -1,6 +1,12 @@
-# The GUI winetest manifest (tests/run/run.sh winetest-gui) — GUI-5's trophy
-# gate: Wine's own user32:msg, whole-module, on proskrnl over the full GUI
-# stack (win32u + wineserver-lite + winefb).
+# The GUI winetest manifest (tests/run/run.sh winetest-gui): the GUI half of
+# the winetest frontier — every subtest of Wine's own user32 test module, run
+# on proskrnl over the full GUI stack (win32u + wineserver-lite + winefb).
+#
+# COVERAGE IS THE COMMENTS, THE GATE IS THE ACTIVE LIST, exactly as in
+# manifest.txt. Active today: user32:msg alone, GUI-5's trophy — whole-module,
+# budget-ratcheted, the block below is its whole story. Every other user32
+# pair is listed at the end of this file, parked, unmeasured, each with the
+# TODO that says so.
 #
 # There IS an oracle half, and there was not until the oracle got a display.
 # Through GUI-6 the pinned wine was built --without-x, and under its null
@@ -118,3 +124,145 @@
 # itself needs deterministic guest time (QEMU -icount), which would slow
 # every leg and is not worth it for this alone.
 user32_test.exe:msg:17:3000
+
+# --- the rest of user32, ALL PARKED AND NONE MEASURED -----------------------
+# Every other subtest the pinned tree's user32 test module has. They are here
+# so the GUI half of the frontier is a LIST rather than an absence — the same
+# rule manifest.txt states for the CUI half: coverage is the comments, the
+# gate is the active list, and a pair that is not green today is parked with
+# its triage rather than deleted. tools/check_wtest_manifests.py is what keeps
+# the two files exhaustive over the modules this tree builds test binaries
+# for.
+#
+# WHAT IS NOT WRITTEN HERE, DELIBERATELY: a failure count. None of these has
+# been run on either half, so there is nothing measured to record, and a
+# plausible number invented here would be worse than no number (Art. 12's
+# reasoning, one level up: a fabricated measurement is a stub answer with a
+# gate's authority). The first step for any of them is therefore the same and
+# is what the TODO means: run the pair on the ORACLE half
+# (`tests/run/run.sh winetest-gui` runs only the active list, so measure with
+# the pinned wine directly for now), then on proskrnl, and write BOTH counts
+# into its block below before touching kernel code.
+#
+# No build work is implied: all of these live in the ONE user32_test.exe the
+# pinned tree builds and the image already carries (Makefile WTEST_USER32), so
+# activating a pair is uncommenting its line.
+#
+# Each block below names the subtest's subject and nothing else. A pair that
+# turns out to be unreachable under the project's scope loses its TODO and
+# gains the deciding constraint instead — manifest.txt's category (2).
+
+# Wine's tests for BroadcastSystemMessage/BroadcastSystemMessageEx.
+# NOT MEASURED on either half.
+# TODO: Implement
+# user32_test.exe:broadcast
+
+# Wine's tests for window classes (Register/Unregister/GetClassInfo, class words).
+# NOT MEASURED on either half.
+# TODO: Implement
+# user32_test.exe:class
+
+# Wine's tests for the clipboard: open/close ownership, formats, delayed rendering.
+# NOT MEASURED on either half.
+# TODO: Implement
+# user32_test.exe:clipboard
+
+# Wine's tests for the COMBOBOX control.
+# NOT MEASURED on either half.
+# TODO: Implement
+# user32_test.exe:combo
+
+# Wine's tests for cursors and icons (Create/Load/Draw, the icon cache).
+# NOT MEASURED on either half.
+# TODO: Implement
+# user32_test.exe:cursoricon
+
+# Wine's tests for DCE support — the window DC cache, GetDC/ReleaseDC classes.
+# NOT MEASURED on either half.
+# TODO: Implement
+# user32_test.exe:dce
+
+# Wine's tests for the DDE functions (DdeInitialize and the conversation protocol).
+# NOT MEASURED on either half.
+# TODO: Implement
+# user32_test.exe:dde
+
+# Wine's tests for the dialog functions (DialogBox/CreateDialog, control navigation).
+# NOT MEASURED on either half.
+# TODO: Implement
+# user32_test.exe:dialog
+
+# Wine's tests for the EDIT control.
+# NOT MEASURED on either half.
+# TODO: Implement
+# user32_test.exe:edit
+
+# Wine's tests for data-structure packing — the user32 struct layouts.
+# NOT MEASURED on either half.
+# TODO: Implement
+# user32_test.exe:generated
+
+# Wine's tests for key-event to key-message translation (SendInput, the input queue).
+# NOT MEASURED on either half.
+# TODO: Implement
+# user32_test.exe:input
+
+# Wine's tests for the LISTBOX control.
+# NOT MEASURED on either half.
+# TODO: Implement
+# user32_test.exe:listbox
+
+# Wine's tests for menus (Create/Track/Draw, the menu message loop).
+# NOT MEASURED on either half.
+# TODO: Implement
+# user32_test.exe:menu
+
+# Wine's tests for the monitor APIs (EnumDisplayMonitors, display settings).
+# NOT MEASURED on either half.
+# TODO: Implement
+# user32_test.exe:monitor
+
+# Wine's tests for resources (LoadString/LoadImage and friends).
+# NOT MEASURED on either half.
+# TODO: Implement
+# user32_test.exe:resource
+
+# Wine's tests for scrollbars (SetScrollInfo, the SCROLLBAR control).
+# NOT MEASURED on either half.
+# TODO: Implement
+# user32_test.exe:scroll
+
+# Wine's tests for the STATIC control.
+# NOT MEASURED on either half.
+# TODO: Implement
+# user32_test.exe:static
+
+# Wine's tests for SystemParametersInfo and GetSystemMetrics.
+# NOT MEASURED on either half.
+# TODO: Implement
+# user32_test.exe:sysparams
+
+# Wine's tests for DrawText/DrawTextEx and the tabbed-text calls.
+# NOT MEASURED on either half.
+# TODO: Implement
+# user32_test.exe:text
+
+# Wine's tests for the drawing helpers (DrawEdge, DrawFrameControl, DrawState).
+# NOT MEASURED on either half.
+# TODO: Implement
+# user32_test.exe:uitools
+
+# Wine's tests for window handling — the largest module after msg.
+# NOT MEASURED on either half.
+# TODO: Implement
+# user32_test.exe:win
+
+# Wine's tests for window stations and desktops.
+# NOT MEASURED on either half.
+# TODO: Implement
+# user32_test.exe:winstation
+
+# Wine's tests for the wsprintf functions.
+# NOT MEASURED on either half.
+# TODO: Implement
+# user32_test.exe:wsprintf
