@@ -4936,13 +4936,27 @@ manifest line").
   succeeds`. That measurement is what the oracle half was added to get, and what it
   established is that the tag is stale in the SUITE rather than a divergence of ours:
   `ok_sequence` only says "succeeds" when the whole sequence matched, and it matched on
-  both halves. So the fix went where the tag lives — a commit on the fork's
-  `proskrnl-target` branch turning that call's `todo` argument off (upstreamable; it is
-  test source, so no shipped Wine code moves). That is not "patching Wine to make a
-  divergence pass" (G9's prohibition), because there is no divergence: it is the ordinary
-  retirement of a tag that a stock Wine satisfies. The kernel budget drops with it, 17 →
-  16, by derivation rather than measurement — the term leaves the ceiling's arithmetic —
-  and the next measured run is what confirms it.
+  both halves. So the fix went where the tag lives — commits on the fork's
+  `proskrnl-target` branch (upstreamable; test source, so no shipped Wine code moves).
+  That is not "patching Wine to make a divergence pass" (G9's prohibition), because there
+  is no divergence: it is the ordinary retirement of a tag that a stock Wine satisfies.
+
+  **It took two commits, and the second is the argument for demanding green rather than
+  budgeting.** Turning the `ok_sequence` call's `todo` argument off silenced its line and
+  the oracle still answered **1** — the same site, a different tag: `WmShowMaxOverlappedSeq`
+  marks its `EVENT_OBJECT_LOCATIONCHANGE` entry `msg_todo`, and while the SEQUENCE was
+  todo, `messages_equal` was told not to report, so the entry's own tag never spoke.
+  With both retired the oracle half measures **0** — demanded green, and green. A ceiling
+  of one would have absorbed the second tag silently and called it the first one's cost.
+
+  The kernel budget dropped with them, 17 → 16, by derivation (the term leaves the
+  ceiling's arithmetic) — and the run that followed **confirms it: 13 measured**, with the
+  ShowWindow todo-success absent from proskrnl's side too. `manifest-gui.txt`'s msg block
+  carries that measurement and its per-family breakdown.
+- **Both halves run the manifest's ACTIVE LIST.** The kernel half always did; the oracle
+  half used to run one hardcoded pair, so activating a second GUI pair would have graded it
+  on the kernel side with its spec side silently unrun — a differential gate down to one
+  side without saying so.
 - **The count is read from winetest's summary line, cross-checked against the exit
   status.** msg spawns ~21 children and each prints its own summary; the parent's is the
   last (it waits on them) and its count is also its exit status, so the leg parses the
