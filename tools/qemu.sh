@@ -504,14 +504,17 @@ fi
 # and inject keys (`send-key`) — the framebuffer's verdict is a picture, not
 # a serial line, and QEMU renders it from its own device model rather than
 # from anything the kernel says about itself (Art. 6). QMP rather than HMP
-# because the replies are machine-parseable. Absent QMP_SOCK this is exactly
-# the previous `-monitor none` invocation.
-if [[ -n "${QMP_SOCK:-}" ]]; then
-    rm -f "$QMP_SOCK"
-    MON_ARGS=(-monitor none -qmp "unix:$QMP_SOCK,server=on,wait=off")
-else
-    MON_ARGS=(-monitor none)
-fi
+# because the replies are machine-parseable.
+#
+# When the caller sets none, a socket is opened anyway, beside the log, for
+# one job: the timeout path below asks a wedged guest "where is everyone?"
+# with `inject-nmi` before killing it (see the killer subshell). Both CI
+# wedges of 2026-08 died mute — a serial log that just stops names nothing
+# (Art. 9: the panic dump is the debugger) — and the kernel already answers
+# an operator NMI with the full all-threads dump (kernel/init/panic.c).
+QMP_SOCK="${QMP_SOCK:-$LOG.qmp}"
+rm -f "$QMP_SOCK"
+MON_ARGS=(-monitor none -qmp "unix:$QMP_SOCK,server=on,wait=off")
 
 # Net-1 (tests/run/run.sh net): NET_PCAP=<path> gives the guest a NIC and
 # writes everything on its wire to a host pcap — networking's screendump
@@ -601,6 +604,19 @@ GRACE="${GRACE:-5}"
         sleep 1
         elapsed=$((elapsed + 1))
     done
+    # TIMEOUT with no verdict: a wedged guest. Before killing it, inject an
+    # NMI — the kernel's vector-2 branch (kernel/init/panic.c) prints the
+    # full fatal dump, every thread's state, wait objects and armed timeout,
+    # to serial — so the log this run leaves behind carries its own
+    # diagnosis. Best-effort and bounded: a QEMU whose main loop is too far
+    # gone to answer QMP still dies by the kill below, and the grace wait
+    # only runs when the injection was accepted.
+    if kill -0 "$QPID" 2>/dev/null; then
+        if timeout -s KILL 15 python3 "$HERE/../tests/gui/qmpctl.py" "$QMP_SOCK" nmi \
+            >/dev/null 2>&1; then
+            sleep "${NMI_DUMP_GRACE:-10}"
+        fi
+    fi
     kill -9 "$QPID" 2>/dev/null
 ) & KPID=$!
 wait "$QPID" 2>/dev/null || true
