@@ -270,7 +270,7 @@ Two corollaries:
 ### Test legs
 
 The harness already has many legs (`files`, `console`, `scm`, `gui`…`gui5con`,
-`guiwtest`, `fuzz`), so this fits its existing shape:
+`winetest-gui`, `fuzz`), so this fits its existing shape:
 
 - **`-smp 1` stays the permanent gate for every existing suite.** Never retire it: it is
   what lets any failure bisect into "concurrency or not".
@@ -316,7 +316,7 @@ automatically preserve it. Auditing them is part of this milestone, not follow-u
 ### Coverage the legs must actually reach
 
 `-smp 4` over the existing suites is the baseline, but two areas need it aimed
-deliberately: the **GUI legs** (`gui3`/`gui5con`/`guiwtest`), because §6e's untested
+deliberately: the **GUI legs** (`gui3`/`gui5con`/`winetest-gui`), because §6e's untested
 user-space concurrency lives in `wineserver-lite` and its clients and nothing else will
 exercise it; and the **winetest manifest**, whose parked-pair answer must be recorded like
 every other CUI milestone's — expected to be "no unparks", since this milestone adds no
@@ -346,7 +346,7 @@ semantics outcome, not a speed outcome.
 This is the same argument shape as `docs/17` §2 (COW justified by an observable RAM
 ceiling, not by memory efficiency). Both are available only with a measurement in hand, so
 **the amendment's evidence is a measurement, not this paragraph**: which of the timing-lost
-`guiwtest` assertions recover when the same suite is given more wall-clock, and whether
+`winetest-gui` assertions recover when the same suite is given more wall-clock, and whether
 multi-threaded TCG on this host actually converts extra vCPUs into throughput for a
 user-mode-bound guest. If the answer is that the failures are not timing-bound after all,
 the justification collapses and the amendment should not be made.

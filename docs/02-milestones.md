@@ -463,7 +463,7 @@ one else ran" — which is why `kernel/mm/pool.c` with no lock, `fs/fat32`'s loc
 sweeps and the non-atomic refcounts all stay correct as written, and the 27-kloc audit
 never happens.
 Do not start until all four entry conditions hold (`docs/18` §13): **CUI-8 is done**; the
-amendment exists with its measurement (which of the timing-lost `guiwtest` assertions
+amendment exists with its measurement (which of the timing-lost `winetest-gui` assertions
 recover with more wall-clock, and whether mttcg converts vCPUs into throughput here); the
 `-smp 1` permanent gate and an `-smp 4` leg exist; and the **seeded lock hand-off** is
 designed — it is what keeps Article 6 reachable and is not retrofittable in spirit.
@@ -483,7 +483,7 @@ than one CPU is shown to have executed ring-3 code**, as a `[KTEST]` verdict, be
 kernel whose APs never run user threads passes every suite unchanged; a real race is
 convicted by a seeded replay rather than by a sanitizer going quiet (Art. 6);
 `kernel/init/verify.c`'s Article 3 soundness premise has been re-derived rather than
-assumed; and the `guiwtest` timing-lost assertions are re-measured against the budget the
+assumed; and the `winetest-gui` timing-lost assertions are re-measured against the budget the
 amendment was justified on.
 
 ---
@@ -794,7 +794,7 @@ through conhost's own `map_to_ctrlevent` (the CUI-4 serial intercept out of the 
 the session's files read back out of the image. `make rungui` now boots that command prompt.
 The serial console is **permanent** by decision (docs/10 HACK-004 rescoped, not retired):
 a console that works while the GUI stack is broken is a kept debugging capability.
-**The trophy: `user32:msg` runs end to end** on the full GUI stack (`run.sh guiwtest`,
+**The trophy: `user32:msg` runs end to end** on the full GUI stack (`run.sh winetest-gui`,
 now IN CI) — 21.5 kloc and ~85 test functions, every one of them entered, winetest's own
 failure count arriving as the NT exit status and ratcheted against
 `tests/winetest/msg-budget.txt`: **9999 (a sentinel: the module could not reach a verdict)
@@ -828,7 +828,7 @@ window. `gen_hive.py` is **not** needed — wineboot did it at runtime.
 
 **Done.** `tests/run/run.sh gui6` is green: the gui6 image carries explorer.exe at the
 path win32u's auto-launch hardcodes, which flips wineserver-lite's desktop fixtures off
-(the retirement is conditional — gui2..gui5 and guiwtest stay explorerless by decision,
+(the retirement is conditional — gui2..gui5 and winetest-gui stay explorerless by decision,
 docs/03 "GUI-2 notes"); smss runs `explorer /desktop=shell,1280x800` with a trailing
 `explorer.exe C:\shelf`, so explorer creates and owns the desktop and its own
 `CreateProcessW` child opens the file window over it — landing on desktop "shell" through

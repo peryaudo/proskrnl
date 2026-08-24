@@ -473,7 +473,7 @@ routed onto desktop "shell" by Wine's own virtual-desktop registry
 configuration (written natively by smss before the first client) and
 the windowed prompt, the applets it launches, and the WOW64 clients all
 live on the explorer desktop with its taskbar.
-**Not yet:** the gui2..gui5 and guiwtest BOOTS stay explorerless by
+**Not yet:** the gui2..gui5 and winetest-gui BOOTS stay explorerless by
 decision (docs/03 "GUI-2 notes"), so the fixture survives as their
 fallback and the two desktop-ownership `user32:msg` assertions stay in
 `msg-budget.txt`'s bound; `CLSID_ShellWindows` registration
@@ -548,7 +548,7 @@ tests/run/run.sh gui5       # GUI-5: clipboard, low-level hooks, AttachThreadInp
 tests/run/run.sh gui5con    # GUI-5: conhost dual-mode — real user32/gdi32 command prompt
 tests/run/run.sh wow64gui   # WOW64: a 32-bit GUI app on the same desktop, typed at that prompt
 tests/run/run.sh gui6       # GUI-6: the Wine desktop vs tests/gui/golden/desktop.ppm (exact match)
-tests/run/run.sh guiwtest   # GUI-5: Wine's own user32:msg suite end to end, budget-ratcheted
+tests/run/run.sh winetest-gui   # GUI-5: Wine's own user32:msg suite end to end, budget-ratcheted
 ```
 
 ## License

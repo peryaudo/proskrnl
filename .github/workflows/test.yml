@@ -489,9 +489,9 @@ jobs:
 
       # One whole run is the single longest leg here (the manifest's per-pair
       # timeout is 3000 s under TCG), hence the outer bound.
-      - name: GUI-5 trophy — user32:msg, budget-ratcheted (tests/run/run.sh guiwtest)
+      - name: GUI-5 trophy — user32:msg, budget-ratcheted (tests/run/run.sh winetest-gui)
         if: ${{ !cancelled() }}
-        run: tests/run/run.sh guiwtest
+        run: tests/run/run.sh winetest-gui
         env:
           TIMEOUT: "3600"
 

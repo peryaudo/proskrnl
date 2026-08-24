@@ -743,7 +743,7 @@ boundary symbols winebuild would have emitted supplied by
   distance to the frontier. Two modules stay out, each because another leg
   owns it: **advapi32** (the security/registry service surface — CUI-2's
   `console` leg, CUI-3's `scm` leg, and `tests/ntapi`) and **user32** (the
-  GUI trophy, its own `manifest-gui.txt` + `guiwtest` leg). The bullets
+  GUI trophy, its own `manifest-gui.txt` + `winetest-gui` leg). The bullets
   below that say a pair "stays off the manifest" record its CAUSE, not its
   absence: the pair is now listed and red until the cause is fixed.
 - **The helper-DLL subtests are reachable now.** `ntdll:thread`,
@@ -4555,7 +4555,7 @@ routed onto explorer's desktop by registry (`HKCU\Software\Wine\Explorer
 "Desktop"="shell"`, the configuration a Wine user sets for a virtual desktop — written
 natively by smss before the first client connects; a GUI-process writer was the first
 cut's defect, `user/smss/smss.c SmssShellDesktopConfig`): the fixture sites are all off, explorer creates
-and owns the desktop, and the entries are foreign because they are. On a boot without a shell — every scripted GUI gate (gui, gui2..gui5, guiwtest and the
+and owns the desktop, and the entries are foreign because they are. On a boot without a shell — every scripted GUI gate (gui, gui2..gui5, winetest-gui and the
 audio legs), which runs a purpose-built client against the compositor or the message path
 and whose golden was measured with no explorer on the desktop, plus every CUI boot, which
 has no desktop at all — win32u's launch would fail and its force-fallback re-enter both
@@ -4578,7 +4578,7 @@ is the same repair X11DRV makes when it finds the rects uninitialized. The two
 `user32:msg` assertions this fixture costs (`SetFocus`/`SetForegroundWindow` on the
 desktop window: no owning thread ⇒ `ERROR_INVALID_HANDLE` where Wine's explorer-owned
 desktop answers `ERROR_ACCESS_DENIED`) remain in `tests/winetest/msg-budget.txt`'s bound —
-they flip only on a guiwtest boot that DERIVES `ShellBoot`=1, which the decision above
+they flip only on a winetest-gui boot that DERIVES `ShellBoot`=1, which the decision above
 declined (the payload is on the volume either way now; it is the flag that decides).
 
 **`HKU\<sid>` exists from boot.** win32u's `font_init` opens
@@ -4840,7 +4840,7 @@ and their reasons:
 
 - **The baked binary decides the mode, not a runtime probe.** headless_stubs.c /
   window_glue.c define a link-time capability flag the shared entry branches on. A disk
-  probe of the server image was rejected: gui3/gui4/guiwtest images carry wineserver-lite
+  probe of the server image was rejected: gui3/gui4/winetest-gui images carry wineserver-lite
   *and* need the headless conhost (their verdicts ride serial). The windowed binary still
   probes `PRSK_SRV_IMAGE`, but only as a refusal — a windowed conhost on a serverless image
   has no desktop to draw on, and would otherwise discover that as a win32u bringup failure
@@ -4895,7 +4895,7 @@ snapshot of the whole executive, not a sample of a moving target.
 
 ### GUI-5 winetest notes (user32:msg — the budget ratchet)
 
-The trophy gate (`tests/run/run.sh guiwtest`) runs the pinned tree's own
+The trophy gate (`tests/run/run.sh winetest-gui`) runs the pinned tree's own
 `user32_test.exe msg` — 21.5 kloc, ~85 test functions — over the full GUI stack, swept by
 the same kernel wtest runner as the CUI manifest (`tests/winetest/manifest-gui.txt`, with
 the manifest's new optional per-pair timeout field).
@@ -4923,7 +4923,7 @@ the manifest's new optional per-pair timeout field).
   one milestone earlier about fonts, is what GUI-3 had to reverse to stop the oracle
   answering metric questions from no font backend at all (docs/06 "One tree, three roles").
 - **The two halves are graded against different files, deliberately.** The oracle half
-  (`guiwtest_oracle`) ratchets against `tests/winetest/msg-budget-oracle.txt`, the kernel
+  (`winetest_gui_oracle`) ratchets against `tests/winetest/msg-budget-oracle.txt`, the kernel
   half against `msg-budget.txt`, and the numbers are not comparable: the second is a
   ceiling over *our* divergences plus a machine-speed band, the first a ceiling over
   unmodified Wine running its own suite, where nothing is ours and every unit is either a
@@ -4963,7 +4963,7 @@ the manifest's new optional per-pair timeout field).
   This is a CI-policy carve-out, not a budget change — the leg's verdict rule is unchanged,
   and a crash exit fails it under either policy.
 - **The per-assertion text is recovered, not read by eye** (`tools/unscreen.py`, run by the
-  leg into `build/tests/guiwtest-msg.log`). HACK-004's console is a screen, so a test's
+  leg into `build/tests/winetest-gui-msg.log`). HACK-004's console is a screen, so a test's
   output reaches serial as a diff: cursor moves, erases and changed cells. Replaying `CSI n
   C` as n spaces and dropping the rest turns the fragments back into
   `msg.c:20062: Test failed: ...`. Nothing machine-read depends on it — the verdict is
@@ -5018,7 +5018,7 @@ fixed, pinned, or convicted by a green leg:
    `tests/kmt/condrv_unwind.c` drives all three states deterministically over the real
    server transport, which the cooperative scheduler makes reachable by construction
    rather than by luck. **This one was ours, not Wine's**, and it is why the leg's ratchet
-   is a ceiling on a *count*: a crash has no count, and `run.sh guiwtest` fails it by name.
+   is a ceiling on a *count*: a crash has no count, and `run.sh winetest-gui` fails it by name.
 
 **What is left, and why** (the budget is a ceiling — `msg-budget.txt` explains the
 difference from the measured count):
@@ -5030,7 +5030,7 @@ difference from the measured count):
   `ERROR_ACCESS_DENIED` because the desktop belongs to explorer, a different input queue;
   we answer `ERROR_INVALID_HANDLE` because it belongs to nobody. GUI-6 built exactly that
   arrangement — on a shell boot the fixture is off and the desktop has a real owner — but
-  the guiwtest boot was kept explorerless by decision (GUI-2 notes above), so the pair
+  the winetest-gui boot was kept explorerless by decision (GUI-2 notes above), so the pair
   stays in the bound: it flips the day that leg derives `ShellBoot`=1 (a flag, not a
   payload, since one image), and the divergence is a recorded fixture cost, not a
   papered-over unknown.

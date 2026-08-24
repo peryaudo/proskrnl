@@ -1220,7 +1220,7 @@ int SessionRun(int abiFailures, int registryOk)
     {
         failures += SessionFlowWtest(WSTR("\\??\\C:\\wtests\\manifest.txt"));
     }
-    else if (SessionLegIs("guiwtest"))
+    else if (SessionLegIs("winetest-gui"))
     {
         /* GUI-5's trophy gate: the same sweep over its own curated list
          * (tests/winetest/manifest-gui.txt), which is baked beside the CUI
