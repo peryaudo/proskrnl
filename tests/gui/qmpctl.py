@@ -6,6 +6,7 @@
     qmpctl.py <socket> type <text>
     qmpctl.py <socket> absmove <x> <y>
     qmpctl.py <socket> button <name> <down|up>
+    qmpctl.py <socket> nmi
     qmpctl.py <socket> quit
 
 The gui legs need what QEMU only offers through its monitor: a copy of
@@ -29,6 +30,13 @@ keyboard for keys.
 `screendump` is the whole point of the framebuffer verdict: the pixels
 come back out of QEMU's own device model, so the kernel is never grading
 its own homework (Art. 6).
+
+`nmi` (qapi/machine.json inject-nmi in the pinned tree) is the wedge
+interrogator: nothing in the guest raises an NMI on its own, so the kernel
+answers one with its full fatal dump — every thread's state, wait objects
+and armed timeout — on serial (kernel/init/panic.c). tools/qemu.sh sends it
+when a run burns its whole TIMEOUT without a verdict, so a silently hung
+boot convicts itself in the log it leaves behind instead of dying mute.
 
 `type` (GUI-5, the gui5con leg) spells a command line as send-key chords:
 one send-key per character (shift held for the shifted US-layout glyphs),
@@ -148,6 +156,10 @@ def main(argv):
             return 2
         events = [{"type": "btn", "data": {"button": arguments[0], "down": arguments[1] == "down"}}]
         qmp.execute("input-send-event", events=events)
+    elif command == "nmi":
+        # qapi/machine.json inject-nmi: an NMI on every CPU (one, here). The
+        # kernel's vector-2 branch prints the fatal dump and halts.
+        qmp.execute("inject-nmi")
     elif command == "quit":
         try:
             qmp.execute("quit")
