@@ -1,11 +1,12 @@
 # The ORACLE half of the winetest-gui ratchet (tests/run/run.sh winetest_gui_oracle):
 # the failure count Wine's own user32:msg reaches on the PINNED WINE ITSELF,
-# on the runner's Xvfb. Same rule as the kernel half's msg-budget.txt — the
+# on the runner's Xvfb. Same rule as the kernel half's budget field — the
 # number only ever goes DOWN, in the same commit as whatever earned it, and a
 # run above it fails the leg.
 #
 # It is a separate file, and a separate number, because it grades a different
-# thing. msg-budget.txt is a ceiling over proskrnl's divergences plus a
+# thing. The kernel half's budget (manifest-gui.txt, the msg pair's third
+# field) is a ceiling over proskrnl's divergences plus a
 # machine-speed band. This one is a ceiling over UNMODIFIED WINE running its
 # own suite: nothing here is a divergence of ours, so every unit of it is
 # either a stale tag in the suite or a harness fault, and both want naming.
@@ -22,14 +23,14 @@
 #     ones), so root is not expected to move it — but it has not been
 #     measured unprivileged here, and CI is where that happens.
 #
-#   - It is ONE MACHINE's count, not a band. msg-budget.txt is explicit that
+#   - It is ONE MACHINE's count, not a band. The kernel half's budget is explicit that
 #     its ceiling is what the count can reach on the SLOWEST machine that
 #     still runs the suite, because two of its families are settled by how
 #     much guest time passes inside a block. Unmodified Wine runs those same
 #     families (test_PeekMessage3, test_WM_COPYDATA) — they simply all passed
 #     on this box, three times. If a slower runner ever answers more than 1,
 #     the finding is a BAND, and it belongs written into this file the way
-#     msg-budget.txt writes its own; it is not licence to raise the ceiling
+#     the kernel half writes its own; it is not licence to raise the ceiling
 #     by one and move on.
 #
 # The one is msg.c:5730:
@@ -39,7 +40,7 @@
 #
 # — a todo_wine tag that is stale in this environment, which winetest counts
 # as a failure. It is Wine's, not ours, and that is exactly the kind of fact
-# the oracle half was added to establish: msg-budget.txt's stable list
+# the oracle half was added to establish: the kernel budget's stable list
 # attributes one of proskrnl's failures to this same tag, and until there was
 # an oracle half, "our 17" and "17" were the same sentence.
 #

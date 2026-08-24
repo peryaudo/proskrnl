@@ -568,7 +568,8 @@ typedef struct
     {
         char exe[WTEST_EXE_CHARS];
         char subtest[WTEST_SUBTEST_CHARS];
-        ULONG timeoutMs; /* 0 = WTEST_TIMEOUT_MS (the two-field lines) */
+        ULONG budget;    /* accepted failure count; 0 = green or nothing */
+        ULONG timeoutMs; /* 0 = WTEST_TIMEOUT_MS (the lines naming no timeout) */
     } pairs[WTEST_MAX_PAIRS];
     int count;
     int overflow;
@@ -639,12 +640,41 @@ static int SessionReadWtestManifest(const WCHAR *path, unsigned char *buffer, UL
     return ok;
 }
 
-/* Parse `<exe>:<subtest>[:<timeout_s>]` lines; '#' comments and blank
- * lines skipped, CRLF tolerated. The optional third field (GUI-5: a whole
- * user32:msg run outlasts the default bound under TCG) is seconds, decimal,
- * nonzero; absent means WTEST_TIMEOUT_MS. Malformed/oversized lines are
- * loud (a silently dropped pair would read as "covered"). Returns 0 on a
- * parse failure. */
+/* One optional numeric manifest field, [start, end). Empty leaves *value
+ * alone (the caller's default); a non-digit, an overflow past `limit` or a
+ * zero where zero is meaningless is a parse failure (0). */
+static int SessionParseWtestNumber(const unsigned char *buffer, ULONG start, ULONG end, ULONG limit,
+                                   int zeroOk, ULONG *value)
+{
+    if (start >= end)
+        return 1;
+    ULONG parsed = 0;
+    for (ULONG i = start; i < end; i++)
+    {
+        if (buffer[i] < '0' || buffer[i] > '9')
+            return 0;
+        parsed = parsed * 10 + (ULONG)(buffer[i] - '0');
+        if (parsed > limit)
+            return 0;
+    }
+    if (parsed == 0 && !zeroOk)
+        return 0;
+    *value = parsed;
+    return 1;
+}
+
+/* Parse `<exe>:<subtest>[:<budget>][:<timeout_s>]` lines; '#' comments and
+ * blank lines skipped, CRLF tolerated. Both optional fields are decimal and
+ * POSITIONAL, and an empty one means the default — so a line that wants only
+ * a timeout still writes the budget (`pair:0:600`).
+ *
+ *   budget   accepted failure count for this pair (winetest's exit status IS
+ *            its failure count). Absent = 0, which is "green or nothing".
+ *   timeout  seconds for the one run; absent = WTEST_TIMEOUT_MS (GUI-5: a
+ *            whole user32:msg run outlasts that default under TCG).
+ *
+ * Malformed/oversized lines are loud (a silently dropped pair would read as
+ * "covered"). Returns 0 on a parse failure. */
 static int SessionParseWtestManifest(const unsigned char *buffer, ULONG length, WTEST_LIST *list)
 {
     ULONG pos = 0;
@@ -664,29 +694,27 @@ static int SessionParseWtestManifest(const unsigned char *buffer, ULONG length, 
             ULONG subEnd = colon + 1;
             while (subEnd < lineEnd && buffer[subEnd] != ':')
                 subEnd++;
+            /* Fields three and four, each [start, end) and either possibly
+             * empty; a fifth field is a malformed line, not a trailing
+             * comment (the manifest has no trailing-# form either). */
+            ULONG budgetEnd = (subEnd < lineEnd) ? subEnd + 1 : lineEnd;
+            while (budgetEnd < lineEnd && buffer[budgetEnd] != ':')
+                budgetEnd++;
+            ULONG timeoutEnd = (budgetEnd < lineEnd) ? budgetEnd + 1 : lineEnd;
+            while (timeoutEnd < lineEnd && buffer[timeoutEnd] != ':')
+                timeoutEnd++;
             ULONG exeChars = colon - pos;
             ULONG subChars = (colon < lineEnd) ? subEnd - colon - 1 : 0;
-            ULONG timeoutMs = 0;
-            int timeoutBad = 0;
-            if (subEnd < lineEnd)
-            {
-                ULONG seconds = 0, digits = 0;
-                for (ULONG i = subEnd + 1; i < lineEnd; i++)
-                {
-                    if (buffer[i] < '0' || buffer[i] > '9' || seconds > 100000)
-                    {
-                        timeoutBad = 1;
-                        break;
-                    }
-                    seconds = seconds * 10 + (buffer[i] - '0');
-                    digits++;
-                }
-                if (digits == 0 || seconds == 0)
-                    timeoutBad = 1;
-                timeoutMs = seconds * 1000;
-            }
+            ULONG budget = 0, seconds = 0;
+            int fieldsBad = timeoutEnd != lineEnd;
+            if (!SessionParseWtestNumber(buffer, (subEnd < lineEnd) ? subEnd + 1 : lineEnd,
+                                         budgetEnd, 65535, 1, &budget) ||
+                !SessionParseWtestNumber(buffer, (budgetEnd < lineEnd) ? budgetEnd + 1 : lineEnd,
+                                         timeoutEnd, 100000, 0, &seconds))
+                fieldsBad = 1;
+            ULONG timeoutMs = seconds * 1000;
             if (colon >= lineEnd || exeChars == 0 || exeChars >= WTEST_EXE_CHARS || subChars == 0 ||
-                subChars >= WTEST_SUBTEST_CHARS || timeoutBad)
+                subChars >= WTEST_SUBTEST_CHARS || fieldsBad)
             {
                 SmssPrintf("[KTEST] wtest FAIL (manifest line at byte %u malformed)\n",
                            (unsigned)pos);
@@ -704,6 +732,7 @@ static int SessionParseWtestManifest(const unsigned char *buffer, ULONG length, 
             for (ULONG i = 0; i < subChars; i++)
                 list->pairs[list->count].subtest[i] = (char)buffer[colon + 1 + i];
             list->pairs[list->count].subtest[subChars] = 0;
+            list->pairs[list->count].budget = budget;
             list->pairs[list->count].timeoutMs = timeoutMs;
             list->count++;
         }
@@ -870,16 +899,22 @@ static int SessionFlowWtest(const WCHAR *manifestPath)
                        SessionWtestList.pairs[i].subtest, SMSS_HEX(status));
             failures++;
         }
-        else if (exitStatus != 0)
-        {
-            SmssPrintf("[KTEST] wtest %s:%s FAIL (exit=%x)\n", SessionWtestList.pairs[i].exe,
-                       SessionWtestList.pairs[i].subtest, SMSS_HEX(exitStatus));
-            failures++;
-        }
         else
         {
-            SmssPrintf("[KTEST] wtest %s:%s PASS\n", SessionWtestList.pairs[i].exe,
-                       SessionWtestList.pairs[i].subtest);
+            /* winetest's exit status IS its failure count (a full 32-bit
+             * value — NT exit codes do not clip at 255), so the verdict is
+             * that count against the pair's manifest budget. Both numbers are
+             * on the line whichever way it goes: the harness grades from this
+             * line (tests/run/run.sh wtest_grade) and cannot ratchet a budget
+             * it was never told the count for, and a PASS that hides a
+             * non-zero count is how a ceiling reads as a green. */
+            int over = (ULONG)exitStatus > SessionWtestList.pairs[i].budget;
+            SmssPrintf("[KTEST] wtest %s:%s %s (exit=%x budget=%x)\n",
+                       SessionWtestList.pairs[i].exe, SessionWtestList.pairs[i].subtest,
+                       over ? "FAIL" : "PASS", SMSS_HEX(exitStatus),
+                       SMSS_HEX(SessionWtestList.pairs[i].budget));
+            if (over)
+                failures++;
         }
     }
     if (SessionWtestList.overflow)

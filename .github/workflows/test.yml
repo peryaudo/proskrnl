@@ -462,13 +462,14 @@ jobs:
 
   # GUI-5's trophy: Wine's own user32:msg — 21.5 kloc, ~85 test functions —
   # over the full GUI stack, with the failure count ratcheted against
-  # tests/winetest/msg-budget.txt (docs/03 "GUI-5 winetest notes" has the
+  # the msg pair's budget field in tests/winetest/manifest-gui.txt (docs/03
+  # "GUI-5 winetest notes" has the
   # policy and the named divergences behind the current number).
   #
   # ADVISORY ON PULL REQUESTS, BLOCKING ON MAIN — the all-green job below is
   # where that is decided; docs/03 "GUI-5 winetest notes" carries the whole
   # reasoning. Up to twelve of the counted assertions are settled by
-  # emulated-machine speed rather than by semantics (msg-budget.txt names
+  # emulated-machine speed rather than by semantics (the manifest's msg block names
   # them: an unkilled 100 ms timer in test_PeekMessage3, a one-second
   # FindWindow poll in test_WM_COPYDATA), and the budget is a ceiling sized
   # for that band on the slowest machine that still runs the suite. A hosted
