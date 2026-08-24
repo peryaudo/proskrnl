@@ -1122,7 +1122,18 @@ wtest_grade() {   # $1 = leg name, $2 = pair key, $3 = budget, $4 = serial log
     verdict="$(grep -oaE "\[KTEST\] wtest ${key//./\\.} (PASS|FAIL) \(exit=0x[0-9a-f]+" "$log" \
         2>/dev/null | tail -1 || true)"
     if [[ -z "$verdict" ]]; then
-        echo "[KTEST] $leg $key FAIL (no verdict — unrun, hung, panicked or timed out)"
+        # A pair that never REACHED an exit status still says why, in the
+        # guest's own words: `FAIL (timeout)` and `FAIL (create=0x…)` carry no
+        # count, so they cannot be graded — but reporting them as "no verdict"
+        # would name the wrong cause for a boot that named the right one.
+        local aborted
+        aborted="$(grep -oaE "\[KTEST\] wtest ${key//./\\.} FAIL \([a-z]+=?[0-9a-fx]*\)" "$log" \
+            2>/dev/null | tail -1 || true)"
+        if [[ -n "$aborted" ]]; then
+            echo "[KTEST] $leg $key ${aborted#*"$key" }"
+        else
+            echo "[KTEST] $leg $key FAIL (no verdict — unrun, hung, panicked or timed out)"
+        fi
         return 1
     fi
     failures=$(( $(grep -oE '0x[0-9a-f]+$' <<<"$verdict") ))
@@ -1468,6 +1479,21 @@ winetest_gui() {
     local manifest="$ROOT/tests/winetest/manifest-gui.txt"
     wtest_parse_manifest "$manifest" || return 2
     local testexe="$ROOT/third_party/wine/dlls/user32/tests/x86_64-windows/user32_test.exe"
+
+    # THE ORACLE HALF IS STILL ONE PAIR'S. It runs `user32_test.exe msg`
+    # against a ceiling of its own (msg-budget-oracle.txt), so activating a
+    # second pair in the manifest would give the kernel half a graded pair
+    # whose spec side never ran — a differential gate quietly down to one
+    # side. That refuses here rather than passing: generalizing it needs an
+    # oracle ceiling PER PAIR, which is a change to the grammar (the budget
+    # field is the kernel half's) and belongs to whoever activates the second
+    # pair.
+    if [[ ${#WTEST_KEYS[@]} != 1 || "${WTEST_KEYS[0]}" != "user32_test.exe:msg" ]]; then
+        echo "== winetest-gui: manifest-gui.txt activates ${WTEST_KEYS[*]}, and the ORACLE" \
+             "half runs user32_test.exe:msg alone — give the oracle half the list (and a" \
+             "per-pair ceiling) before activating another pair ==" >&2
+        return 2
+    fi
 
     # --- oracle half first (minutes), then the kernel half (an hour under
     # TCG). Its verdict does not gate the kernel half: a red leg must not
