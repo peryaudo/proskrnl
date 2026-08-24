@@ -76,36 +76,58 @@
 #       proskrnl involvement cannot convict the kernel (Art. 6), so it
 #       cannot sit in a differential gate.
 #
-#   (c) the pair's subject needs a GUI BOOT — a DLL whose imports pull in
-#       user32/gdi32, which on a Gui=0 boot has no desktop to reach. (This
-#       used to be a property of the media: the GUI stack was not on the CUI
-#       volume. One image carries it now; what a parked (c) pair lacks is a
-#       Gui=1 boot.) This is the same reason user32 is out of this file; such
-#       a pair belongs in manifest-gui.txt, not here — and THREE NOW LIVE
-#       THERE rather than being parked here with a sentence saying they
-#       should: ntdll:om (the WinSta0 half of the object namespace),
-#       ntdll:rtl (comctl32, which imports user32/gdi32) and
-#       kernel32:toolhelp (a sub-process that LoadLibrary's shell32). Their
-#       triage moved with them, verbatim and unmeasured on that machine. The
-#       exclusion must name the specific dependency and show that the
-#       failures downstream of it convict nothing — a pair that ALSO fails
-#       for a kernel reason stays in and stays red.
+#   (c) the pair's subject needs a GUI BOOT — see THE PLACEMENT RULE below,
+#       which is what decides the file rather than this category deciding it.
+#       A (c) pair is simply one the rule sends to manifest-gui.txt: the
+#       exclusion must still name the specific dependency, and a pair whose
+#       GUI blocker is only one of several is still a (c) pair.
 #
-#       A pair with a GUI blocker AND a non-GUI one stays HERE, because
-#       moving it would say the desktop is all it waits for: ws2_32:sock and
-#       ws2_32:protocol each have a user32/window family among their
-#       blockers, and also families that no desktop answers (AF_INET6 rows,
-#       live-internet DNS).
+# ---------------------------------------------------------------------------
+# THE PLACEMENT RULE — which manifest a pair belongs in
+#
+#   A pair that CAN pass on this leg's machines belongs HERE.
+#   A pair that CANNOT belongs in manifest-gui.txt.
+#
+# That is the whole rule, and it is about the MACHINE, not about why the pair
+# is red today. "This leg's machines" are the two boots run.sh winetest gives
+# a pair: the Gui=0 CUI boot, and — for the audio modules only — the Gui=1
+# virtio-snd boot the same leg provides (the AUD-2 amendment below). If
+# passing needs anything else a desktop supplies — a window, a window station,
+# a DLL whose imports pull in user32/gdi32 — no amount of kernel work makes
+# the pair green on this leg, and it goes in the GUI list whether it is active
+# or parked.
+#
+# Corollaries, each of which has caught a real miscall:
+#
+#   - A GUI-dependent pair moves EVEN IF it also has non-GUI blockers. Where
+#     it can eventually pass is what places it; what else is wrong with it is
+#     triage, and triage travels with the pair. ws2_32:sock and ws2_32:protocol
+#     were kept here on the opposite reasoning — "moving it would say the
+#     desktop is all it waits for" — and that was wrong: neither can pass on a
+#     Gui=0 boot at all (protocol's WSAAsyncGetXByY block needs a WINDOW and
+#     spins forever without one), so this file was claiming coverage of two
+#     pairs it can never turn green. Both are in manifest-gui.txt now, with
+#     their AF_INET6 and live-DNS blockers written down beside the GUI one.
+#   - A pair that is merely RED here stays here. Kernel gaps, FAT-floor
+#     limits, oracle flakes — none of those is a machine question.
+#   - Placement is not a judgement about difficulty. ntdll:om, ntdll:rtl and
+#     kernel32:toolhelp moved for this rule, not because they looked hard.
+#
+# tools/check_wtest_manifests.py enforces what is mechanical about this — a
+# user32 pair is never in this file, and every pair is declared exactly once —
+# but WHICH file a CUI module's pair belongs in is this rule applied by
+# whoever writes the triage. Say which half of the rule you applied.
 #
 #       AUD-2 AMENDMENT (docs/23 §6c): the AUDIO modules (mmdevapi_test.exe,
-#       winmm_test.exe) are the exception to (c)'s "belongs in
-#       manifest-gui.txt". Their pairs live in THIS manifest — the audio
-#       milestones' done-when counts against it — but the runner partitions
-#       them onto their own BOOT (run.sh wtest_is_audio): a Gui=1 boot with
-#       the virtio-snd device on the QEMU command line, against the CUI arm's
-#       Gui=0 one. Both arms boot copies of the same image; only the flags and
-#       the devices differ, and a pair from any other module never joins the
-#       audio arm.
+#       winmm_test.exe) are why the rule says "this leg's machineS", plural.
+#       Their pairs live in THIS manifest — the audio milestones' done-when
+#       counts against it — and the runner partitions them onto their own
+#       BOOT (run.sh wtest_is_audio): a Gui=1 boot with the virtio-snd device
+#       on the QEMU command line, against the CUI arm's Gui=0 one. They pass
+#       on a machine THIS leg provides, so the rule keeps them here. Both arms
+#       boot copies of the same image; only the flags and the devices differ,
+#       and a pair from any other module never joins the audio arm.
+# ---------------------------------------------------------------------------
 #
 # Every oracle-side measurement below was taken as an ORDINARY USER under a
 # UTF-8 locale, which the runner now enforces (tests/run/run.sh): before that
@@ -1787,33 +1809,3 @@ winmm_test.exe:wave:0:600
 # (the v6 test_bind block needs a ::1 the measuring container lacked; CI
 # hosts carry it).
 ws2_32_test.exe:afd:0:600
-# 1. RED — sock (measured 2026-08-18, post-resolver): the startup crash
-#    is gone; the suite runs. The residual families each have an owner:
-#    WSAAsyncSelect/message-pump rows (user32 glue — the GUI winetest
-#    shelf), AF_INET6 data-path rows (docs/03 "Net-2 staged AF_INET6"),
-#    urgent-data rows beyond the loopback sidechannel (docs/03 "Net-2
-#    urgent data"), GetAdaptersAddresses' DNS legs (dnsapi's unixlib is
-#    dormant — a possible future seam, deliberately not taken at Net-3),
-#    and the sockopt tail beyond the Net-2 set (kernel half measured:
-#    the suite runs deep — 1542 failing rows across those families —
-#    then WEDGES past sock.c:5150's deferred-connect block into the
-#    pair's 900 s timeout). The ORACLE half itself is
-#    red on the measuring container (422 of 2.67M rows — the v6 and
-#    user32 families), so the pair cannot convict the kernel here
-#    (Art. 6); it unparks family by family as their owners land.
-#    # TODO: Implement (family by family; user32 rows need the GUI shelf)
-# ws2_32_test.exe:sock:0:900
-# 2. RED — protocol (measured 2026-08-18, its first real measurement —
-#    "triaged" is Net-3's done-when word): the resolver surface itself is
-#    green on both runners (getaddrinfo/gethostby*/getservby*/
-#    getproto*/WSALookupService refusals, the GetAdaptersInfo/
-#    GetIpForwardTable rows over real iphlpapi). Two blockers park it:
-#    (a) the WSAAsyncGetXByY block needs a WINDOW and SPINS FOREVER under
-#    the user32 stand-ins — on BOTH runners (oracle measured 25+ min at
-#    100% CPU at protocol.c:563) — so the pair cannot even time out
-#    cleanly until the GUI winetest shelf carries it; (b) the IDN /
-#    GetAddrInfoExW rows resolve REAL public domains — the live internet
-#    is in the verdict path, non-hermetic by construction (guest DNS
-#    rides slirp to whatever resolver the runner has).
-#    # TODO: Implement (the GUI winetest shelf; an offline-DNS answerer)
-# ws2_32_test.exe:protocol:0:600

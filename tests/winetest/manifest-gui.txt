@@ -2,6 +2,15 @@
 # the winetest frontier — every subtest of Wine's own user32 test module, run
 # on proskrnl over the full GUI stack (win32u + wineserver-lite + winefb).
 #
+# WHAT IS IN THIS FILE is decided by manifest.txt's PLACEMENT RULE, not by the
+# module a pair comes from: a pair that CAN pass on the CUI leg's machines
+# lives there, a pair that CANNOT lives here. So this file holds every user32
+# pair, and also the pairs of CUI modules whose subject needs a desktop —
+# ntdll:om, ntdll:rtl, kernel32:toolhelp, ws2_32:sock, ws2_32:protocol. A GUI
+# blocker places a pair here even when it has non-GUI blockers too: where it
+# can eventually pass is what places it, and the rest is triage that travels
+# with it.
+#
 # COVERAGE IS THE COMMENTS, THE GATE IS THE ACTIVE LIST, exactly as in
 # manifest.txt. Active today: user32:msg — GUI-5's trophy, whole-module and
 # budget-ratcheted, the block below is its whole story — and user32:wsprintf,
@@ -321,9 +330,10 @@ user32_test.exe:wsprintf
 # happens the counts describe where the pair came from, not what it does here.
 #
 # The audio modules are NOT in this file even though they too need a Gui=1
-# boot: manifest.txt's AUD-2 amendment keeps them the CUI gate's pairs, run on
-# their own boot by the same leg. GUI dependency is why a pair moves here; a
-# GUI BOOT alone is not.
+# boot, and the placement rule is why: their boot is one the CUI LEG provides
+# (run.sh wtest_is_audio, the AUD-2 amendment), so they CAN pass there and the
+# rule keeps them there. The question the rule asks is which leg can make a
+# pair green, never which flags its boot happens to carry.
 
 # (b) The oracle CRASHES here (exit 5, no summary line): om.c:1893 wants
 #     \Sessions\1\Windows\WindowStations\WinSta0 and NtQueryObject answers
@@ -362,3 +372,60 @@ user32_test.exe:wsprintf
 #     runs, it moves to manifest-gui.txt rather than back here.
 # TODO: Implement
 # kernel32_test.exe:toolhelp
+
+# --- ws2_32, the two pairs no Gui=0 boot can turn green ----------------------
+# Moved here by the placement rule (manifest.txt's header), and they are the
+# case that rule was sharpened on. Both were kept in the CUI list on the
+# reasoning that a pair with a GUI blocker AND a non-GUI one should stay put,
+# "because moving it would say the desktop is all it waits for" — which got
+# the question backwards. Where a pair can EVENTUALLY pass is what places it;
+# what else is wrong with it is triage, and the triage travels with it. On a
+# Gui=0 boot protocol's WSAAsyncGetXByY block needs a window and spins forever
+# without one, and sock's WSAAsyncSelect/message-pump rows have nowhere to
+# post — so the CUI list was claiming coverage of two pairs it can never turn
+# green.
+#
+# Their OTHER blockers are real and are named in the blocks below: AF_INET6
+# data-path rows, urgent data beyond the loopback sidechannel, dnsapi's
+# dormant unixlib, and — protocol's hardest — IDN/GetAddrInfoExW rows that
+# resolve REAL public domains, which is non-hermetic by construction and no
+# desktop fixes. A desktop is necessary for these pairs, not sufficient.
+#
+# The counts below were measured on the CUI machine (2026-08-18, post-
+# resolver). Neither has been re-measured on this leg's boot; that is the
+# first step of each TODO, and until it happens these numbers describe where
+# the pair came from.
+
+# RED — sock (measured 2026-08-18, post-resolver, on the CUI machine): the startup crash
+#    is gone; the suite runs. The residual families each have an owner:
+#    WSAAsyncSelect/message-pump rows (user32 glue — the GUI winetest
+#    shelf), AF_INET6 data-path rows (docs/03 "Net-2 staged AF_INET6"),
+#    urgent-data rows beyond the loopback sidechannel (docs/03 "Net-2
+#    urgent data"), GetAdaptersAddresses' DNS legs (dnsapi's unixlib is
+#    dormant — a possible future seam, deliberately not taken at Net-3),
+#    and the sockopt tail beyond the Net-2 set (kernel half measured:
+#    the suite runs deep — 1542 failing rows across those families —
+#    then WEDGES past sock.c:5150's deferred-connect block into the
+#    pair's 900 s timeout). The ORACLE half itself is
+#    red on the measuring container (422 of 2.67M rows — the v6 and
+#    user32 families), so the pair cannot convict the kernel here
+#    (Art. 6); it unparks family by family as their owners land.
+#    Unparks family by family, and the user32 rows are what this move buys.
+# TODO: Implement
+# ws2_32_test.exe:sock:0:900
+
+# RED — protocol (measured 2026-08-18 on the CUI machine, its first real measurement —
+#    "triaged" is Net-3's done-when word): the resolver surface itself is
+#    green on both runners (getaddrinfo/gethostby*/getservby*/
+#    getproto*/WSALookupService refusals, the GetAdaptersInfo/
+#    GetIpForwardTable rows over real iphlpapi). Two blockers park it:
+#    (a) the WSAAsyncGetXByY block needs a WINDOW and SPINS FOREVER under
+#    the user32 stand-ins — on BOTH runners (oracle measured 25+ min at
+#    100% CPU at protocol.c:563) — so the pair cannot even time out
+#    cleanly until the GUI winetest shelf carries it; (b) the IDN /
+#    GetAddrInfoExW rows resolve REAL public domains — the live internet
+#    is in the verdict path, non-hermetic by construction (guest DNS
+#    rides slirp to whatever resolver the runner has).
+#    Needs both: this leg's desktop for (a), an offline-DNS answerer for (b).
+# TODO: Implement
+# ws2_32_test.exe:protocol:0:600

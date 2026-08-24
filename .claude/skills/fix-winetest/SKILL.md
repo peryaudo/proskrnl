@@ -29,9 +29,30 @@ what you type, then the one that changes what you may conclude.
 |---|---|---|
 | leg | `tests/run/run.sh winetest [pair...]` | `tests/run/run.sh winetest-gui [pair...]` |
 | machine | `Gui=0` boot (audio pairs get their own `Gui=1` boot with virtio-snd) | `Gui=1` boot: win32u, wineserver-lite, winefb, a desktop |
-| modules | ntdll, kernel32, msvcrt, ucrtbase, cmd, ws2_32, mmdevapi, winmm | user32, plus the CUI-module pairs whose subject NEEDS a desktop (`ntdll:om`, `ntdll:rtl`, `kernel32:toolhelp`) |
+| modules | ntdll, kernel32, msvcrt, ucrtbase, cmd, ws2_32, mmdevapi, winmm | user32, plus the CUI-module pairs whose subject NEEDS a desktop (`ntdll:om`, `ntdll:rtl`, `kernel32:toolhelp`, `ws2_32:sock`, `ws2_32:protocol`) |
 | serial log | `build/tests/wtest-subset-serial.log` | `build/tests/winetest-gui-subset-serial.log`, plus `winetest-gui-subset-msg.log` — the assertion text replayed through `tools/unscreen.py`, because this leg's console is an 80-column screen diff that mangles it (the `-msg` name is historical: it holds whichever pairs the run selected) |
 | budgets | every active pair is 0 (green or parked) | `user32:msg` carries a budget; everything else is 0 |
+
+**Which file a pair belongs in is a rule, not a preference** — manifest.txt's
+header states it and you apply it whenever a measurement changes what you know
+about a pair:
+
+> A pair that CAN pass on the CUI leg's machines belongs in `manifest.txt`.
+> A pair that CANNOT belongs in `manifest-gui.txt`.
+
+It is a question about the MACHINE, never about why the pair is red. Kernel
+gap, FAT floor, oracle flake → it stays where it is. Needs a window, a window
+station, or a DLL importing user32/gdi32 → it moves, **even if it also has
+blockers a desktop cannot fix** (where it can eventually pass is what places
+it; the rest is triage, and triage travels with the pair). The audio modules
+are not an exception: their Gui=1 virtio-snd boot is one the CUI *leg*
+provides, so they can pass there.
+
+If your measurement shows a parked pair is in the wrong file, moving it — with
+its triage verbatim, and a line saying which half of the rule you applied — is
+a legitimate item on its own. `ws2_32:sock` and `ws2_32:protocol` were moved
+exactly that way, after being kept in the CUI list on reasoning that had the
+question backwards.
 
 Both manifests speak `<exe>:<subtest>[:<budget>][:<timeout_s>]`, both legs
 grade through the same `wtest_grade`, and both demand the ORACLE half green —
