@@ -684,7 +684,13 @@ static int SessionParseWtestManifest(const unsigned char *buffer, ULONG length, 
         while (end < length && buffer[end] != '\n')
             end++;
         ULONG lineEnd = end;
-        while (lineEnd > pos && (buffer[lineEnd - 1] == '\r' || buffer[lineEnd - 1] == ' '))
+        /* Tabs too, not just spaces: the two host readers
+         * (tests/run/run.sh wtest_parse_manifest, tools/check_wtest_manifests.py)
+         * trim all trailing whitespace, and a line THEY accept and this one
+         * refuses is a manifest that passes the style gate and then dies on
+         * the image after a full QEMU boot. */
+        while (lineEnd > pos && (buffer[lineEnd - 1] == '\r' || buffer[lineEnd - 1] == ' ' ||
+                                 buffer[lineEnd - 1] == '\t'))
             lineEnd--;
         if (lineEnd > pos && buffer[pos] != '#')
         {
