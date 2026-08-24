@@ -2490,7 +2490,15 @@ gen-timezones:
 # checked mechanically, just not here. The other two data generators keep
 # their stamp rules too; running them here as well is free and moves their
 # verdict minutes earlier.
-gen-check:
+#
+# The winetest-manifest check rides here for the SCOPE sentence above rather
+# than because it is a generated file: its input is tracked files of the
+# pinned tree (dlls/*/tests/Makefile.in), so it belongs with the checks that
+# read the pin and not in `make format`, which runs on a bare checkout where
+# third_party/wine is not present at all (the reason gen-nls's output is
+# checked in). Same family, same failure it prevents: a pin bump nobody
+# re-read leaves the tree claiming a coverage it no longer has.
+gen-check: wtest-manifest-check
 	python3 tools/gen_abi.py --check
 	python3 tools/gen_syscalls.py --check
 	python3 tools/gen_upcase.py --check
@@ -2534,7 +2542,22 @@ frontier:
 frontier-check:
 	python3 tools/blocking_frontier.py --check
 
-.PHONY: all test run clean format gen-abi gen-nls gen-check frontier frontier-check
+# The winetest manifests are EXHAUSTIVE over the modules this Makefile builds
+# test binaries for (tools/check_wtest_manifests.py): every subtest the pinned
+# tree has is written down, active or parked, in the manifest its module
+# belongs to -- so a pin bump that adds a subtest cannot silently shrink the
+# coverage the manifests claim, and a pair no longer in the tree cannot sit
+# there unrunnable. `wtest-manifest-report` prints the coverage table;
+# `wtest-manifest-check` is a prerequisite of `gen-check` (below), which is
+# where the checks that READ THE PIN live.
+wtest-manifest-report:
+	python3 tools/check_wtest_manifests.py --report
+
+wtest-manifest-check:
+	python3 tools/check_wtest_manifests.py
+
+.PHONY: all test run clean format gen-abi gen-nls gen-check frontier frontier-check \
+        wtest-manifest-report wtest-manifest-check
 
 # Header dependency files emitted by -MMD (see DEPFLAGS).
 -include $(OBJ:.o=.d)

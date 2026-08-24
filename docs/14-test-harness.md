@@ -171,6 +171,19 @@ budget out (`mmdevapi_test.exe:render:0:600`):
 - **`timeout_s`** — seconds for the one run, guest side and as the oracle half's backstop.
   Default 300.
 
+The manifests are also **exhaustive**, and that is checked rather than trusted:
+`tools/check_wtest_manifests.py` (a prerequisite of `make gen-check`, with the other
+checks that read the pin — never `make format`, which runs on a bare checkout where
+`third_party/wine` is not present) asks
+the Makefile which modules this tree builds test binaries for and the pinned tree's own
+`dlls/*/tests/Makefile.in` which subtests each module has, then demands every one of them
+appear in exactly one manifest — active, or parked with its triage — in the file its module
+belongs to. A pin bump that adds a subtest therefore cannot silently shrink the coverage
+the manifests claim, and a pair the pin renamed away cannot sit there unrunnable. It also
+re-parses every active line under the grammar's real bounds, so a manifest that would die
+on the image fails that gate before a boot pays for it. `make wtest-manifest-report`
+prints the coverage table.
+
 The winetest leg takes the same filter, over manifest **pairs**. A pair's name is
 `<module>:<subtest>`, the module being the exe without its `_test.exe` tail (`ntdll`,
 `kernel32`, `msvcrt`, `ucrtbase`, `cmd`); a bare word with no `:` matches either half:

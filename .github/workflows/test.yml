@@ -50,7 +50,9 @@ concurrency:
 jobs:
   # The non-semantic gates: `make format` (docs/15) — the blocking frontier
   # (G14), clang-format's layout, clang-tidy's naming + correctness lints —
-  # and `make gen-check`, the generated-source gate (Art. 4 / G4). No QEMU and
+  # and `make gen-check`, the checks that READ THE PIN: the generated-source
+  # gate (Art. 4 / G4) and the winetest manifests' exhaustiveness over the
+  # pinned tree (tools/check_wtest_manifests.py). No QEMU and
   # no Wine BUILD: clang-tidy needs the two header-only submodules the kernel
   # compiles against, and the generators need the pinned wine SOURCE (headers,
   # NLS, INF, .rgs), all of which a shallow submodule checkout gives. So this
@@ -93,7 +95,7 @@ jobs:
       # data tables must match what their generators produce from THIS pin.
       # Ahead of `make format` because it is seconds, and a stale abi/ makes
       # every verdict behind it suspect.
-      - name: make gen-check (G4 — the generated sources match the pin)
+      - name: make gen-check (G4 — the generated sources, and the winetest manifests, match the pin)
         run: make gen-check
 
       # Same packages tools/setup_linux.sh installs, minus everything that is
