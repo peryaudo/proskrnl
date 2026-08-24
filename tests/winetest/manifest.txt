@@ -81,10 +81,21 @@
 #       used to be a property of the media: the GUI stack was not on the CUI
 #       volume. One image carries it now; what a parked (c) pair lacks is a
 #       Gui=1 boot.) This is the same reason user32 is out of this file; such
-#       a pair belongs in manifest-gui.txt, not here. The
+#       a pair belongs in manifest-gui.txt, not here — and THREE NOW LIVE
+#       THERE rather than being parked here with a sentence saying they
+#       should: ntdll:om (the WinSta0 half of the object namespace),
+#       ntdll:rtl (comctl32, which imports user32/gdi32) and
+#       kernel32:toolhelp (a sub-process that LoadLibrary's shell32). Their
+#       triage moved with them, verbatim and unmeasured on that machine. The
 #       exclusion must name the specific dependency and show that the
 #       failures downstream of it convict nothing — a pair that ALSO fails
 #       for a kernel reason stays in and stays red.
+#
+#       A pair with a GUI blocker AND a non-GUI one stays HERE, because
+#       moving it would say the desktop is all it waits for: ws2_32:sock and
+#       ws2_32:protocol each have a user32/window family among their
+#       blockers, and also families that no desktop answers (AF_INET6 rows,
+#       live-internet DNS).
 #
 #       AUD-2 AMENDMENT (docs/23 §6c): the AUDIO modules (mmdevapi_test.exe,
 #       winmm_test.exe) are the exception to (c)'s "belongs in
@@ -246,12 +257,6 @@ ntdll_test.exe:generated
 #     to pin NOT_IMPLEMENTED as Windows behaviour would be new evidence.
 # ntdll_test.exe:info
 ntdll_test.exe:large_int
-# (b) The oracle CRASHES here (exit 5, no summary line): om.c:1893 wants
-#     \Sessions\1\Windows\WindowStations\WinSta0 and NtQueryObject answers
-#     c0000008, because the winstation half of the object namespace is the
-#     user32/GUI path that is off this image by Art. 7. Fails without
-#     proskrnl involvement, so it cannot convict the kernel.
-# ntdll_test.exe:om
 ntdll_test.exe:path
 # AT ITS TODO FLOOR — NOT FIXABLE WHILE PROSKRNL IS THE MORE NT-CORRECT
 #     RUNNER, and there is no `TODO: Implement` line below any more. The pair
@@ -1009,15 +1014,6 @@ ntdll_test.exe:port
 #       - 22  the Wow6432Node enumeration group at :1980-:1990.
 # TODO: Implement
 # ntdll_test.exe:reg
-# AT ITS CUI-IMAGE FLOOR — NOT FIXABLE ON THIS IMAGE.
-#     All 26 failures are test_LdrAddRefDll (rtl.c:2314-:2348) and every one
-#     follows from LoadLibraryA("comctl32.dll") returning NULL. comctl32
-#     imports user32 and gdi32, so it cannot be on the CUI volume (G7).
-#     Deliberately NOT excluded the way kernel32:toolhelp is: toolhelp's
-#     entire subject sits behind its GUI dependency, while here the rest of
-#     the pair passes. It is commented out because it cannot go green, not
-#     because it convicts nothing.
-# ntdll_test.exe:rtl
 ntdll_test.exe:rtlbitmap
 ntdll_test.exe:rtlstr
 ntdll_test.exe:string
@@ -1476,23 +1472,6 @@ kernel32_test.exe:power
 kernel32_test.exe:thread
 kernel32_test.exe:time
 kernel32_test.exe:timer
-# (c) toolhelp belongs to the GUI image, not this one, and it is a whole-pair
-#     dependency rather than a few assertions. Every one of its snapshot
-#     tests is taken against a SUB-PROCESS it launches, and that
-#     sub-process's init() does
-#       `if (!LoadLibraryA("shell32.dll")) ExitProcess(WAIT_ABANDONED);`
-#     (third_party/wine dlls/kernel32/tests/toolhelp.c) before it signals
-#     the parent. shell32's import table names user32.dll and gdi32.dll, so
-#     honouring it means putting the whole GUI stack on the CUI volume —
-#     which is the boundary G7 exists to keep. Measured on proskrnl: the
-#     child dies there, the parent's wait times out at toolhelp.c:649, and
-#     the remaining 134 failures are all "couldn't find sub-process ..."
-#     downstream of that one line. Nothing in the run convicts a kernel
-#     surface: the process and thread enumeration the pair is nominally
-#     about answers correctly for the three processes that DO exist.
-#     Re-check by staging shell32 + user32 + gdi32 + shlwapi; if the pair
-#     runs, it moves to manifest-gui.txt rather than back here.
-# kernel32_test.exe:toolhelp
 # (b) HOST-LOCAL ORACLE FAILURE — and NOT a kernel gap, which is why this
 #     block carries no `TODO: Implement`. proskrnl's half PASSES; the ORACLE
 #     half fails on at least one KVM developer box with 36 failures, 9 each

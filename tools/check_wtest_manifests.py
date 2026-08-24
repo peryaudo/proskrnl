@@ -19,7 +19,10 @@ So this asks the pin, not a reviewer:
   * which subtests each module HAS comes from the pinned tree's own
     dlls/<mod>/tests/Makefile.in: every .c in SOURCES except the helper DLLs
     (a .c with a matching .spec is a runtime-loaded module, not a subtest).
-  * which manifest a module belongs in is the CUI/GUI split below.
+  * which manifest a pair may live in: a GUI module's pairs are always the GUI
+    leg's; a CUI module's are the CUI leg's unless its triage moved it to the
+    GUI list for needing a desktop (manifest.txt's rule (c)), which is the
+    pair's call and not this script's.
 
 Then: every pair exists in exactly one manifest, every pair a manifest names
 exists in the tree, and every ACTIVE line parses under the shared grammar
@@ -187,12 +190,21 @@ def main():
             )
         declared[key] = GUI_MANIFEST
 
+    # WHERE A PAIR MAY LIVE is not simply its module's file. A GUI module's
+    # pairs are the GUI leg's, always. A CUI module's are the CUI leg's by
+    # default -- but a pair whose SUBJECT needs a desktop (manifest.txt's rule
+    # (c): a window station, a DLL importing user32/gdi32) belongs in the GUI
+    # list whatever module it comes from, and three do. So the rule enforced
+    # here is the one that cannot drift: a user32 pair is never in the CUI
+    # list, and every pair is declared exactly once. Which of the two files a
+    # CUI module's pair sits in is the triage's call, and the triage is in the
+    # file beside it.
     rows = []
     upstream = set()
     for exe in sorted(dirs):
-        want = GUI_MANIFEST if exe in GUI_MODULES else CUI_MANIFEST
+        home = GUI_MANIFEST if exe in GUI_MODULES else CUI_MANIFEST
         subtests = module_subtests(dirs[exe])
-        active = 0
+        counts = {CUI_MANIFEST: [0, 0], GUI_MANIFEST: [0, 0]}
         for subtest in subtests:
             key = (exe, subtest)
             upstream.add(key)
@@ -200,15 +212,22 @@ def main():
             if where is None:
                 findings.append(
                     "%s:%s exists in %s but is in neither manifest — add it to %s, active or "
-                    "parked with its triage" % (exe, subtest, dirs[exe], want)
+                    "parked with its triage" % (exe, subtest, dirs[exe], home)
                 )
-            elif where != want:
+                continue
+            if exe in GUI_MODULES and where != GUI_MANIFEST:
                 findings.append(
-                    "%s:%s is declared in %s but belongs in %s" % (exe, subtest, where, want)
+                    "%s:%s is declared in %s — a %s pair belongs in %s"
+                    % (exe, subtest, where, exe, GUI_MANIFEST)
                 )
-            elif (cui if want == CUI_MANIFEST else gui)[key][1]:
-                active += 1
-        rows.append((exe, want, len(subtests), active))
+                continue
+            counts[where][0] += 1
+            if (cui if where == CUI_MANIFEST else gui)[key][1]:
+                counts[where][1] += 1
+        for manifest in (CUI_MANIFEST, GUI_MANIFEST):
+            total, active = counts[manifest]
+            if total:
+                rows.append((exe, manifest, total, active))
 
     for key, where in sorted(declared.items()):
         if key not in upstream:
@@ -226,7 +245,7 @@ def main():
         print("check_wtest_manifests: " + finding, file=sys.stderr)
     print(
         "== wtest-manifest check: %d failing (%d pairs over %d modules) =="
-        % (len(findings), len(upstream), len(rows))
+        % (len(findings), len(upstream), len(dirs))
     )
     return 1 if findings else 0
 
