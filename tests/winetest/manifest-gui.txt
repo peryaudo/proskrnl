@@ -275,3 +275,62 @@ user32_test.exe:msg:16:3000
 # NOT MEASURED on either half.
 # TODO: Implement
 # user32_test.exe:wsprintf
+
+# --- the GUI-DEPENDENT pairs of the CUI modules -----------------------------
+# Not user32's, and here for the reason manifest.txt's rule (c) gives: the
+# pair's subject needs a GUI BOOT — a desktop, a window station, a DLL whose
+# imports pull in user32/gdi32 — which a Gui=0 boot has nothing to reach. That
+# rule always ended "such a pair belongs in manifest-gui.txt, not here"; these
+# three were parked in the CUI list anyway, which made the sentence a comment
+# rather than a place. They are now where the rule says, and they carry a TODO
+# because on THIS leg's machine the dependency is present: the boot has the
+# desktop, the window station and the whole GUI stack, so what parks them in
+# the CUI list does not park them here.
+#
+# Their triage below is MOVED VERBATIM, measurements and all, and every one of
+# those numbers was taken on the CUI machine. None has been re-measured on
+# this leg's boot — the first step for each is exactly that, and until it
+# happens the counts describe where the pair came from, not what it does here.
+#
+# The audio modules are NOT in this file even though they too need a Gui=1
+# boot: manifest.txt's AUD-2 amendment keeps them the CUI gate's pairs, run on
+# their own boot by the same leg. GUI dependency is why a pair moves here; a
+# GUI BOOT alone is not.
+
+# (b) The oracle CRASHES here (exit 5, no summary line): om.c:1893 wants
+#     \Sessions\1\Windows\WindowStations\WinSta0 and NtQueryObject answers
+#     c0000008, because the winstation half of the object namespace is the
+#     user32/GUI path that is off this image by Art. 7. Fails without
+#     proskrnl involvement, so it cannot convict the kernel.
+# TODO: Implement
+# ntdll_test.exe:om
+
+# AT ITS CUI-IMAGE FLOOR — NOT FIXABLE ON THIS IMAGE.
+#     All 26 failures are test_LdrAddRefDll (rtl.c:2314-:2348) and every one
+#     follows from LoadLibraryA("comctl32.dll") returning NULL. comctl32
+#     imports user32 and gdi32, so it cannot be on the CUI volume (G7).
+#     Deliberately NOT excluded the way kernel32:toolhelp is: toolhelp's
+#     entire subject sits behind its GUI dependency, while here the rest of
+#     the pair passes. It is commented out because it cannot go green, not
+#     because it convicts nothing.
+# TODO: Implement
+# ntdll_test.exe:rtl
+
+# (c) toolhelp belongs to the GUI image, not this one, and it is a whole-pair
+#     dependency rather than a few assertions. Every one of its snapshot
+#     tests is taken against a SUB-PROCESS it launches, and that
+#     sub-process's init() does
+#       `if (!LoadLibraryA("shell32.dll")) ExitProcess(WAIT_ABANDONED);`
+#     (third_party/wine dlls/kernel32/tests/toolhelp.c) before it signals
+#     the parent. shell32's import table names user32.dll and gdi32.dll, so
+#     honouring it means putting the whole GUI stack on the CUI volume —
+#     which is the boundary G7 exists to keep. Measured on proskrnl: the
+#     child dies there, the parent's wait times out at toolhelp.c:649, and
+#     the remaining 134 failures are all "couldn't find sub-process ..."
+#     downstream of that one line. Nothing in the run convicts a kernel
+#     surface: the process and thread enumeration the pair is nominally
+#     about answers correctly for the three processes that DO exist.
+#     Re-check by staging shell32 + user32 + gdi32 + shlwapi; if the pair
+#     runs, it moves to manifest-gui.txt rather than back here.
+# TODO: Implement
+# kernel32_test.exe:toolhelp
