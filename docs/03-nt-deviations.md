@@ -4577,7 +4577,8 @@ explorer's process exactly as `X11DRV_SetDesktopWindow` does on Wine; under the 
 is the same repair X11DRV makes when it finds the rects uninitialized. The two
 `user32:msg` assertions this fixture costs (`SetFocus`/`SetForegroundWindow` on the
 desktop window: no owning thread ⇒ `ERROR_INVALID_HANDLE` where Wine's explorer-owned
-desktop answers `ERROR_ACCESS_DENIED`) remain in `tests/winetest/msg-budget.txt`'s bound —
+desktop answers `ERROR_ACCESS_DENIED`) remain inside the msg pair's budget in
+`tests/winetest/manifest-gui.txt` —
 they flip only on a winetest-gui boot that DERIVES `ShellBoot`=1, which the decision above
 declined (the payload is on the volume either way now; it is the flag that decides).
 
@@ -4897,8 +4898,9 @@ snapshot of the whole executive, not a sample of a moving target.
 
 The trophy gate (`tests/run/run.sh winetest-gui`) runs the pinned tree's own
 `user32_test.exe msg` — 21.5 kloc, ~85 test functions — over the full GUI stack, swept by
-the same kernel wtest runner as the CUI manifest (`tests/winetest/manifest-gui.txt`, with
-the manifest's new optional per-pair timeout field).
+the same kernel wtest runner as the CUI manifest (`tests/winetest/manifest-gui.txt`, in the
+same `<exe>:<subtest>[:<budget>][:<timeout_s>]` grammar the CUI list uses — docs/14 "A
+manifest line").
 
 - **There is an oracle leg since the oracle got a display — and this note used to say the
   opposite.** Through GUI-6 the pinned oracle was `--without-x`, and under its null display
@@ -4922,16 +4924,17 @@ the manifest's new optional per-pair timeout field).
   TARGET, and the oracle is a host program, not the target — and the same argument, made
   one milestone earlier about fonts, is what GUI-3 had to reverse to stop the oracle
   answering metric questions from no font backend at all (docs/06 "One tree, three roles").
-- **The two halves are graded against different files, deliberately.** The oracle half
+- **The two halves are graded against different numbers, deliberately.** The oracle half
   (`winetest_gui_oracle`) ratchets against `tests/winetest/msg-budget-oracle.txt`, the kernel
-  half against `msg-budget.txt`, and the numbers are not comparable: the second is a
+  half against the msg pair's own budget field in `manifest-gui.txt`, and the two are not
+  comparable: the second is a
   ceiling over *our* divergences plus a machine-speed band, the first a ceiling over
   unmodified Wine running its own suite, where nothing is ours and every unit is either a
   stale tag in the suite or a harness fault. **Measured, the oracle answers 1** — three
   consecutive runs, byte-identical (32082 tests executed, 234 marked as todo, 3 skipped,
   1 failure, ~83 s), and the one is always `msg.c:5730`, `ShowWindow(SW_SHOWMAXIMIZED)`
   succeeding inside a `todo_wine` block. That is Wine's stale tag, not a divergence of
-  ours — and it is the first thing the new half paid for, because `msg-budget.txt`'s
+  ours — and it is the first thing the new half paid for, because the kernel budget's
   stable list attributes one of *proskrnl's* 17 to that same tag and had no way to prove
   it. The kernel budget is unchanged by this (proskrnl fails it too, so the ceiling still
   has to cover it); what changed is that the entry now has a measurement behind it instead
@@ -4943,7 +4946,9 @@ the manifest's new optional per-pair timeout field).
   exists because the first draft of the parser matched `failures)` and silently read a
   *child's* zero — the parent's line says "1 failure", singular. A number nobody
   cross-checked is how a gate reports green for a run it never read.
-- **The verdict is a budget ratchet** (`tests/winetest/msg-budget.txt`): the leg reads the
+- **The verdict is a budget ratchet** (the msg pair's budget field in
+  `tests/winetest/manifest-gui.txt` — a budget is a property of the PAIR, so any pair in
+  either manifest may carry one, and this is the only one that does): the leg reads the
   kernel's own verdict line off serial (winetest's text reaches the console through an
   80-column screen diff that mangles it; the NT exit status carries the full failure count)
   and fails on any count above the budget. The budget only ever decreases, in the same
@@ -5020,8 +5025,8 @@ fixed, pinned, or convicted by a green leg:
    rather than by luck. **This one was ours, not Wine's**, and it is why the leg's ratchet
    is a ceiling on a *count*: a crash has no count, and `run.sh winetest-gui` fails it by name.
 
-**What is left, and why** (the budget is a ceiling — `msg-budget.txt` explains the
-difference from the measured count):
+**What is left, and why** (the budget is a ceiling — the msg pair's block in
+`manifest-gui.txt` explains the difference from the measured count):
 
 - *Two assertions wait on GUI-6.* `SetFocus(GetDesktopWindow())` and
   `SetForegroundWindow(GetDesktopWindow())` both go through

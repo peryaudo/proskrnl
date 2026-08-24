@@ -476,7 +476,7 @@ live on the explorer desktop with its taskbar.
 **Not yet:** the gui2..gui5 and winetest-gui BOOTS stay explorerless by
 decision (docs/03 "GUI-2 notes"), so the fixture survives as their
 fallback and the two desktop-ownership `user32:msg` assertions stay in
-`msg-budget.txt`'s bound; `CLSID_ShellWindows` registration
+the msg pair's budget in `manifest-gui.txt`; `CLSID_ShellWindows` registration
 (rpcss/local-server) is still refused, which explorer tolerates.
 
 Next: **Net-1** — sockets

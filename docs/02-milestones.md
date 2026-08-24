@@ -797,7 +797,8 @@ a console that works while the GUI stack is broken is a kept debugging capabilit
 **The trophy: `user32:msg` runs end to end** on the full GUI stack (`run.sh winetest-gui`,
 now IN CI) — 21.5 kloc and ~85 test functions, every one of them entered, winetest's own
 failure count arriving as the NT exit status and ratcheted against
-`tests/winetest/msg-budget.txt`: **9999 (a sentinel: the module could not reach a verdict)
+the msg pair's budget in `tests/winetest/manifest-gui.txt`: **9999 (a sentinel: the
+module could not reach a verdict)
 → 23 → 20 → 18 → 17**. Six real bugs convicted along the way, three of them by the run *not*
 finishing: a missing per-session `BaseNamedObjects`, an unimplemented
 `get_process_idle_event`, a lock-order inversion of ours that deadlocked the suite, an

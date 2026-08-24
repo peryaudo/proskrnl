@@ -149,6 +149,28 @@ A subset run is for **iteration, never for a verdict** — it says so on stdout,
 gates in `docs/CONTRIBUTING.md` are the unfiltered runs. A pattern matching nothing is an
 error listing the known names, so a typo can never read as "everything passed".
 
+### A manifest line
+
+Both manifests are lists of `<exe>:<subtest>[:<budget>][:<timeout_s>]`, read by two parsers
+that agree by construction — `tests/run/run.sh wtest_parse_manifest` host side and
+`user/smss/session.c SessionParseWtestManifest` off the baked image. `#` and blank lines are
+comments (whole-line only), and a malformed line is fatal on both sides: a pair silently
+dropped would read as covered.
+
+The two optional fields are positional, so a pair that wants only a timeout writes the
+budget out (`mmdevapi_test.exe:render:0:600`):
+
+- **`budget`** — the accepted failure COUNT for that pair on proskrnl, default 0. winetest's
+  exit status *is* its failure count, so the leg grades the count against this and fails on
+  anything above it (a crash exit has no count and fails by name whatever the budget says).
+  It only ever ratchets DOWN, in the commit that earns it. It is the KERNEL half's ceiling
+  only: the oracle half is the spec side, and a pair red there convicts nothing (Art. 6).
+  Any pair in either manifest may carry one; today exactly one does — `user32:msg`, whose
+  block in `manifest-gui.txt` is the worked example of what a budget has to explain about
+  itself.
+- **`timeout_s`** — seconds for the one run, guest side and as the oracle half's backstop.
+  Default 300.
+
 The winetest leg takes the same filter, over manifest **pairs**. A pair's name is
 `<module>:<subtest>`, the module being the exe without its `_test.exe` tail (`ntdll`,
 `kernel32`, `msvcrt`, `ucrtbase`, `cmd`); a bare word with no `:` matches either half:
@@ -266,7 +288,8 @@ tests/
     run.sh               # oracle [subtest...] | proskrnl [subtest...] | winetest
                          #   | fuzz | persist | console | ...
   winetest/
-    manifest.txt         # the winetest gate's <test_exe>:<subtest> pairs (all non-GUI)
+    manifest.txt         # the winetest gate's pairs (all non-GUI)
+    manifest-gui.txt     # the winetest-gui trophy's pairs (user32)
   fuzz/                  # the differential fuzzer (same single-binary shape)
 ```
 

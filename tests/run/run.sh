@@ -437,7 +437,7 @@ ORACLE_OUT="$BUILD/ntapi/out"   # per-case captured output; oracle() owns it
 # with the runner's orphan list as the only surviving evidence. That is
 # precisely how sem_file/io_teardown cost two 60-minute jobs (issue #118).
 # The winetest leg has had per-pair timeouts since it was written (the
-# manifest's optional third field, honoured GUEST-side by
+# manifest's optional timeout field, honoured GUEST-side by
 # user/smss/session.c -- its oracle half is bounded only by the leg); the
 # ntapi legs had none. The proskrnl leg
 # needs none — its cases run inside a boot qemu.sh already bounds with $TIMEOUT.
@@ -1050,6 +1050,102 @@ wtest_is_audio() {   # $1 = exe
     esac
 }
 
+# Both manifests, one parser. `<exe>:<subtest>[:<budget>][:<timeout_s>]`, one
+# pair per line, '#' comments and blank lines skipped, CRLF tolerated — the
+# same grammar user/smss/session.c SessionParseWtestManifest reads off the
+# baked image, in the other language.
+#
+# The fields are POSITIONAL and both optional-with-a-default, so a line that
+# wants only a timeout writes the budget explicitly (`…:0:600`). An empty
+# field is legal and means the default, but the manifests in this tree spell
+# the zero out: `pair::600` and `pair:600` differ by one character and mean
+# opposite things, and the second used to be the timeout syntax.
+#
+#   budget   the accepted failure COUNT for this pair on proskrnl (0 = green
+#            or nothing). Only ever ratcheted DOWN, in the commit that earned
+#            it. It is the KERNEL half's ceiling only: the oracle half is the
+#            spec side, and a pair whose oracle is red convicts nothing
+#            (Art. 6), so it stays demanded-green there.
+#   timeout  seconds for the one run, guest side (SmssRun) and as the oracle
+#            half's backstop. Absent = the guest's 300 s default.
+#
+# Parsed into PARALLEL arrays rather than raw lines: the oracle argv and the
+# kernel's verdict line are <exe>:<subtest> only, and splitting once here is
+# what keeps the other two fields out of them. Sets WTEST_EXES/SUBS/KEYS/
+# BUDGETS/SECS; a malformed line is fatal (a silently dropped pair reads as
+# covered).
+wtest_parse_manifest() {   # $1 = manifest path
+    WTEST_EXES=(); WTEST_SUBS=(); WTEST_KEYS=(); WTEST_BUDGETS=(); WTEST_SECS=()
+    local line lineno=0 exe sub budget secs rest
+    while IFS= read -r line; do
+        lineno=$((lineno + 1))
+        line="${line%$'\r'}"
+        line="${line%"${line##*[![:space:]]}"}"      # trailing blanks
+        [[ -z "$line" || "$line" == \#* ]] && continue
+        IFS=: read -r exe sub budget secs rest <<<"$line"
+        # The bounds are the GUEST parser's (user/smss/session.c
+        # SessionParseWtestNumber), so a line either reader refuses is a line
+        # BOTH refuse: a manifest that parses here and dies on the image is a
+        # gate that fails after an hour of QEMU instead of before it.
+        if [[ -z "$exe" || -z "$sub" || -n "$rest" ]] ||
+           ! [[ "${budget:-0}" =~ ^[0-9]+$ && "${secs:-1}" =~ ^[0-9]+$ ]] ||
+           (( ${budget:-0} > 65535 || ${secs:-1} < 1 || ${secs:-1} > 100000 )); then
+            echo "run.sh: $1:$lineno: malformed pair '$line'" \
+                 "(want <exe>:<subtest>[:<budget>][:<timeout_s>])" >&2
+            return 2
+        fi
+        WTEST_EXES+=("$exe"); WTEST_SUBS+=("$sub"); WTEST_KEYS+=("$exe:$sub")
+        WTEST_BUDGETS+=("${budget:-0}"); WTEST_SECS+=("$secs")
+    done < "$1"
+    if (( ${#WTEST_KEYS[@]} == 0 )); then
+        echo "run.sh: $1: no pairs (every line is a comment)" >&2
+        return 2
+    fi
+    return 0
+}
+
+# One pair's verdict, out of the boot's serial log and against its budget.
+# Both legs grade through here, so a budget is a property of the PAIR and not
+# of the leg that happens to run it (the GUI trophy's ratchet used to be a
+# leg-shaped special case with a file of its own).
+#
+# The guest's line is the input, never the console text: winetest prints
+# through an 80-column screen diff that mangles it, while smss writes
+# `[KTEST] wtest <pair> {PASS,FAIL} (exit=<hex> budget=<hex>)` straight to
+# serial with the process's full 32-bit exit status — which for winetest IS
+# its failure count. A missing line is a hung, panicked or timed-out boot and
+# fails; a count outside a sane range is a CRASH (0xc0000005 is not a count)
+# and fails by name whatever the budget says.
+wtest_grade() {   # $1 = leg name, $2 = pair key, $3 = budget, $4 = serial log
+    local leg="$1" key="$2" budget="$3" log="$4" verdict failures crash
+    # No ^ anchor: conhost cursor escapes may share the verdict's line.
+    verdict="$(grep -oaE "\[KTEST\] wtest ${key//./\\.} (PASS|FAIL) \(exit=0x[0-9a-f]+" "$log" \
+        2>/dev/null | tail -1 || true)"
+    if [[ -z "$verdict" ]]; then
+        echo "[KTEST] $leg $key FAIL (no verdict — unrun, hung, panicked or timed out)"
+        return 1
+    fi
+    failures=$(( $(grep -oE '0x[0-9a-f]+$' <<<"$verdict") ))
+    if (( failures < 0 || failures > 65535 )); then
+        printf -v crash '0x%x' "$(( failures & 0xffffffff ))"
+        echo "[KTEST] $leg $key FAIL (crashed, exit=$crash)"
+        return 1
+    fi
+    if (( failures > budget )); then
+        echo "[KTEST] $leg $key FAIL (failures=$failures budget=$budget)"
+        return 1
+    fi
+    if (( budget == 0 )); then
+        echo "[KTEST] $leg $key PASS"
+    elif (( failures < budget )); then
+        echo "[KTEST] $leg $key PASS (failures=$failures budget=$budget:" \
+             "ratchet the manifest's budget field down)"
+    else
+        echo "[KTEST] $leg $key PASS (failures=$failures, at budget)"
+    fi
+    return 0
+}
+
 # The M10 stretch gate (docs/02 "Ideal regression: the CUI subset of Wine's
 # own test suite"): the manifest of <test_exe>:<subtest> pairs
 # (tests/winetest/manifest.txt) must exit 0 under the pinned oracle AND on
@@ -1068,29 +1164,16 @@ winetest() {
     make -C "$ROOT" wtests >/dev/null
     mkdir -p "$BUILD/wtests"
 
-    # Parse into PARALLEL arrays rather than carrying raw lines around: both
-    # the oracle argv and the kernel's verdict line are <exe>:<subtest> only,
-    # and splitting once here is what keeps the third field out of them.
-    #
-    # That third field — the per-pair timeout — is kept, not discarded. It used
-    # to be honoured GUEST-side only (user/smss/session.c), so a pair that
-    # WEDGED under the oracle had no bound at all and consumed the whole leg;
-    # the same shape as issue #118, in the half of the gate that runs first.
-    local wtestExes=() wtestSubs=() wtestKeys=() wtestSecs=()
-    local line
-    while IFS= read -r line; do
-        line="${line%$'\r'}"
-        [[ -z "$line" || "$line" == \#* ]] && continue
-        local exe="${line%%:*}" rest="${line#*:}"
-        local sub="${rest%%:*}" secs="${rest#*:}"
-        [[ "$secs" == "$rest" || -z "$secs" ]] && secs=""
-        wtestExes+=("$exe"); wtestSubs+=("$sub"); wtestSecs+=("$secs")
-        wtestKeys+=("$exe:$sub")
-    done < "$manifest"
-    if [[ ${#wtestKeys[@]} -eq 0 ]]; then
-        echo "== winetest: manifest empty ==" >&2
-        return 2
-    fi
+    # The manifest's own parser (wtest_parse_manifest): the per-pair timeout
+    # is honoured on BOTH sides here — it used to be guest-side only
+    # (user/smss/session.c), so a pair that WEDGED under the oracle had no
+    # bound at all and consumed the whole leg, the same shape as issue #118 in
+    # the half of the gate that runs first — and the per-pair BUDGET reaches
+    # the grading loop below.
+    wtest_parse_manifest "$manifest" || return 2
+    local wtestExes=("${WTEST_EXES[@]}") wtestSubs=("${WTEST_SUBS[@]}")
+    local wtestKeys=("${WTEST_KEYS[@]}") wtestBudgets=("${WTEST_BUDGETS[@]}")
+    local wtestSecs=("${WTEST_SECS[@]}")
 
     # The $SUBTESTS filter (see the header). A pattern that matches no pair is
     # a TYPO, not an empty run — the ntapi legs' rule (check_subtests) and the
@@ -1110,18 +1193,24 @@ winetest() {
                 exit 2
             fi
         done
-        local selExes=() selSubs=() selKeys=()
+        # Every parallel array is rebuilt, not just the naming three: index i
+        # has to mean the same pair in all of them, and the timeout array used
+        # to be left whole here — so a subset run graded pair i against pair
+        # j's bound.
+        local selExes=() selSubs=() selKeys=() selBudgets=() selSecs=()
         for ((i = 0; i < ${#wtestKeys[@]}; i++)); do
             for pat in "${SUBTESTS[@]}"; do
                 if wtest_matches "$pat" "${wtestExes[i]}" "${wtestSubs[i]}"; then
                     selExes+=("${wtestExes[i]}"); selSubs+=("${wtestSubs[i]}")
-                    selKeys+=("${wtestKeys[i]}")
+                    selKeys+=("${wtestKeys[i]}"); selBudgets+=("${wtestBudgets[i]}")
+                    selSecs+=("${wtestSecs[i]}")
                     break
                 fi
             done
         done
         wtestExes=("${selExes[@]}"); wtestSubs=("${selSubs[@]}")
-        wtestKeys=("${selKeys[@]}")
+        wtestKeys=("${selKeys[@]}"); wtestBudgets=("${selBudgets[@]}")
+        wtestSecs=("${selSecs[@]}")
         echo "== winetest: subset run (${SUBTESTS[*]}, ${#wtestKeys[@]} pairs)" \
              "— NOT the gate; run unfiltered for a verdict =="
     fi
@@ -1237,17 +1326,14 @@ winetest() {
             "$ROOT/tools/qemu.sh" "$imgAudio" >/dev/null 2>&1 || true
     fi
 
-    # No ^ anchor: conhost cursor escapes may share the verdict's line (the
-    # run.sh console precedent). Each pair is graded from ITS boot's log.
+    # Each pair is graded from ITS boot's log, through the shared grader —
+    # which is what gives a CUI pair a budget field at all, and what gives
+    # every pair here the crash discrimination the trophy leg used to own
+    # alone.
     local vlog
     for ((i = 0; i < ${#wtestKeys[@]}; i++)); do
         if wtest_is_audio "${wtestExes[i]}"; then vlog="$logAudio"; else vlog="$log"; fi
-        if grep -qF "[KTEST] wtest ${wtestKeys[i]} PASS" "$vlog" 2>/dev/null; then
-            echo "[KTEST] wtest ${wtestKeys[i]} PASS"
-        else
-            echo "[KTEST] wtest ${wtestKeys[i]} FAIL"
-            fails=$((fails + 1))
-        fi
+        wtest_grade wtest "${wtestKeys[i]}" "${wtestBudgets[i]}" "$vlog" || fails=$((fails + 1))
     done
     echo "== winetest: $fails failing =="
     return $((fails > 0 ? 1 : 0))
@@ -1361,7 +1447,8 @@ winetest_gui_oracle() {   # $1 = the user32_test.exe both halves run
 # user32/tests/msg.c"): the pinned tree's own user32_test.exe, whole msg
 # module, over the full GUI stack — win32u, wineserver-lite, winefb, the
 # windowed message machinery — swept by the same session-manager wtest runner the
-# CUI manifest uses (per-pair timeout via the manifest's third field).
+# CUI manifest uses — same manifest grammar, per-pair budget and timeout
+# included.
 #
 # TWO HALVES since the oracle gained a display driver: winetest_gui_oracle above
 # runs the same binary under the pinned wine on Xvfb (it was PROSKRNL-ONLY
@@ -1369,23 +1456,17 @@ winetest_gui_oracle() {   # $1 = the user32_test.exe both halves run
 # refuses every window and the suite hangs; tests/winetest/manifest-gui.txt
 # has that finding). The spec is still msg.c's own ok()/todo_wine assertions
 # (third-party, Windows-verified; todo_wine applies identically on proskrnl).
-# The verdict is a BUDGET RATCHET: tests/winetest/msg-budget.txt holds the
-# currently-accepted failure count, parsed against winetest's own summary
-# line (the exit code clips at 255 and the count does not); more failures
-# than the budget is a regression and fails the leg, fewer is a note to
-# ratchet the file down in the commit that earned it. 0 is the milestone's
-# end state.
+# The verdict is a BUDGET RATCHET, and the budget is now the MANIFEST's own
+# per-pair field rather than a file of this leg's own (msg-budget.txt, whose
+# reasoning moved into manifest-gui.txt beside the pair it is about): more
+# failures than the budget is a regression and fails the leg, fewer is a note
+# to ratchet the field down in the commit that earned it. 0 is the milestone's
+# end state. The ORACLE half keeps a file, msg-budget-oracle.txt — it is a
+# ceiling over a different machine (unmodified Wine on Xvfb) and belongs to
+# neither the pair nor this leg's kernel half.
 winetest_gui() {
-    local budgetfile="$ROOT/tests/winetest/msg-budget.txt"
-    local budget
-    # `|| true` for the reason the oracle half's identical pipeline carries one:
-    # under `set -o pipefail` a missing or comment-only budget file makes grep
-    # exit 1 and kills the leg before the message below can name the cause.
-    budget="$(grep -vE '^\s*(#|$)' "$budgetfile" | head -1 | tr -d '[:space:]' || true)"
-    if ! [[ "$budget" =~ ^[0-9]+$ ]]; then
-        echo "== winetest-gui: msg-budget.txt holds no number ==" >&2
-        return 2
-    fi
+    local manifest="$ROOT/tests/winetest/manifest-gui.txt"
+    wtest_parse_manifest "$manifest" || return 2
     local testexe="$ROOT/third_party/wine/dlls/user32/tests/x86_64-windows/user32_test.exe"
 
     # --- oracle half first (minutes), then the kernel half (an hour under
@@ -1416,62 +1497,43 @@ winetest_gui() {
     "$ROOT/tools/unscreen.py" --grep 'Test (failed|succeeded)|marked todo|unhandled exception' \
         "$log" > "$ROOT/build/tests/winetest-gui-msg.log" 2>/dev/null || true
 
-    # The ratchet input is the KERNEL's own verdict line (DbgPrint straight
-    # to serial — never through the console, whose 80-column screen diff
-    # truncates and mangles winetest's text): `[KTEST] wtest <pair> PASS` is
-    # zero failures, `FAIL (exit=0xN)` carries winetest's failure count as
-    # the exit status (a full 32-bit value — NT exit codes do not clip at
-    # 255). A timeout/create failure has no count and always fails the leg.
+    # The sweep must have REACHED ITS END having selected exactly the pairs
+    # this manifest activates. The verdict lines alone do not say that:
+    # `[KTEST] wtest done tests=<n>` is the only statement of how many pairs
+    # the boot actually ran, and a run that ended early or selected nothing is
+    # the shape a count nobody cross-checked hides (docs/03 M10 winetest
+    # notes).
     #
     # `|| true` is load-bearing, not defensive: this script runs under
     # `set -o pipefail`, so a grep that matches NOTHING fails the whole
     # pipeline, the assignment inherits that status, and `set -e` kills the
-    # leg on the spot. The no-verdict branch below — the one that names a
-    # hung, panicked or timed-out boot — was therefore unreachable: the leg
-    # exited 1 having printed nothing about why, which is the single worst
-    # moment to say nothing. Found by tracing a deliberately truncated run.
-    # And the sweep must have REACHED ITS END having selected exactly this one
-    # pair. The verdict line alone does not say that: `[KTEST] wtest done
-    # tests=<n>` is the only statement of how many pairs the boot actually ran,
-    # and a run that ended early or selected nothing is the shape a count
-    # nobody cross-checked hides (docs/03 M10 winetest notes).
-    local sweptLine swept
+    # leg on the spot — which is how the branch that names a hung, panicked or
+    # timed-out boot became unreachable once, the leg exiting 1 having printed
+    # nothing about why.
+    local sweptLine swept expected=${#WTEST_KEYS[@]}
     sweptLine="$(grep -aE '^\[KTEST\] wtest done ' "$log" | tail -1 | tr -d '\r' || true)"
     swept="$(sed -nE 's/.*tests=([0-9]+).*/\1/p' <<<"$sweptLine")"
-    if [[ "$swept" != "1" ]]; then
+    if [[ "$swept" != "$expected" ]]; then
         echo "== winetest-gui: FAIL (the manifest-gui sweep reported tests='${swept:-none}'," \
-             "expected the one msg pair; see $log) =="
+             "expected $expected; see $log) =="
         return 1
     fi
 
-    local verdict failures
-    verdict="$(grep -oE '\[KTEST\] wtest user32_test\.exe:msg (PASS|FAIL \(exit=0x[0-9a-f]+\))' "$log" | tail -1 || true)"
-    if [[ -z "$verdict" ]]; then
-        echo "== winetest-gui: FAIL (no kernel verdict — hung, panicked or timed out; see $log) =="
+    # Graded through the shared grader, against each pair's own budget field —
+    # the same input and the same rules as the CUI leg: the KERNEL's own
+    # verdict line off serial (never the console, whose 80-column screen diff
+    # mangles winetest's text), a full 32-bit exit status that is winetest's
+    # failure count, and a crash exit failed by name whatever the budget says.
+    local fails=0 i
+    for ((i = 0; i < ${#WTEST_KEYS[@]}; i++)); do
+        wtest_grade winetest-gui "${WTEST_KEYS[i]}" "${WTEST_BUDGETS[i]}" "$log" ||
+            fails=$((fails + 1))
+    done
+    if (( fails )); then
+        echo "== winetest-gui: FAIL ($fails of $expected pairs over budget or unrun; see $log) =="
         return 1
     fi
-    if [[ "$verdict" == *PASS ]]; then
-        failures=0
-    else
-        failures=$(( $(grep -oE '0x[0-9a-f]+' <<<"$verdict") ))
-        # A failure COUNT is a small number; an NT status (0xC0000005, a
-        # crash) is not a count and no budget forgives it.
-        if (( failures < 0 || failures > 65535 )); then
-            printf -v crash '0x%x' "$(( failures & 0xffffffff ))"
-            echo "== winetest-gui: FAIL (the msg run crashed, exit=$crash; see $log) =="
-            return 1
-        fi
-    fi
-    echo "[KTEST] winetest-gui user32:msg failures=$failures budget=$budget"
-    if (( failures > budget )); then
-        echo "== winetest-gui: FAIL ($failures failures against a budget of $budget; see $log) =="
-        return 1
-    fi
-    if (( failures < budget )); then
-        echo "== winetest-gui: PASS — and $failures < budget $budget: ratchet msg-budget.txt down =="
-    else
-        echo "== winetest-gui: PASS ($failures failures, at budget) =="
-    fi
+    echo "== winetest-gui: PASS ($expected pairs within budget) =="
     # The kernel half passed; the leg has not until both halves have. Every
     # `return 1` above already fails it, so this is the only path where the
     # oracle's verdict can still decide.

@@ -4,15 +4,33 @@
 # proskrnl from ONE binary per module (Makefile `wtests`, the pinned tree's
 # own unmodified test objects linked standalone).
 #
-# Syntax: `<exe>:<subtest>[:<timeout_s>]`, one per line. A line whose first
-# character is '#' is a COMMENT, and so are blank lines — both readers agree
-# (tests/run/run.sh winetest, and user/smss/session.c
-# SessionParseWtestManifest, which is what the kernel-side sweep parses off
-# the baked image). Comments are whole-line only: there is no trailing-#
-# form, because a '#' is a legal character in neither field and adding one
-# would make a typo'd pair name parse as a shorter pair rather than fail
-# loudly. The optional third field is the per-pair timeout in seconds
-# (default 300).
+# Syntax: `<exe>:<subtest>[:<budget>][:<timeout_s>]`, one per line — the same
+# grammar manifest-gui.txt uses, and the same one both readers parse
+# (tests/run/run.sh wtest_parse_manifest, and user/smss/session.c
+# SessionParseWtestManifest, which is what the kernel-side sweep reads off the
+# baked image). A line whose first character is '#' is a COMMENT, and so are
+# blank lines. Comments are whole-line only: there is no trailing-# form,
+# because a '#' is a legal character in no field and adding one would make a
+# typo'd pair name parse as a shorter pair rather than fail loudly.
+#
+#   budget       the accepted failure COUNT for this pair on proskrnl —
+#                winetest's exit status is its failure count, and the leg
+#                fails on anything above this. Default 0, which is what every
+#                pair in THIS file carries: a CUI pair is activated green or
+#                it stays parked (the "never activate a red pair" rule below).
+#                A budget is for a pair whose remaining failures are named,
+#                understood and ratcheted down one commit at a time — today
+#                that is user32:msg alone, in manifest-gui.txt. It only ever
+#                DECREASES, in the same commit as the fix that earns it (G13).
+#                The ORACLE half is not budgeted on either leg: it is the spec
+#                side, and a pair red there convicts nothing (Art. 6).
+#   timeout_s    the per-pair timeout in seconds, default 300.
+#
+# Both optional fields are POSITIONAL, so a pair that wants only a timeout
+# writes the budget out: `mmdevapi_test.exe:render:0:600`. An empty field is
+# legal and means the default, but nothing here spells it that way — `pair::600`
+# and `pair:600` differ by one character and mean opposite things, and the
+# second used to BE the timeout syntax.
 #
 # advapi32 is deliberately out: its subject is the security/registry service
 # surface, covered by the CUI-2/CUI-3 legs (tests/run/run.sh console, scm) and
@@ -1743,7 +1761,7 @@ cmd.exe_test.exe:directory
 mmdevapi_test.exe:dependency
 mmdevapi_test.exe:mmdevenum
 mmdevapi_test.exe:propstore
-mmdevapi_test.exe:render:600
+mmdevapi_test.exe:render:0:600
 mmdevapi_test.exe:spatialaudio
 
 # --- winmm (third_party/wine/dlls/winmm/tests) — the audio image ------------
@@ -1758,7 +1776,7 @@ winmm_test.exe:midi
 winmm_test.exe:mixer
 winmm_test.exe:mmio
 winmm_test.exe:timer
-winmm_test.exe:wave:600
+winmm_test.exe:wave:0:600
 # 1. Dies with EXCEPTION_WINE_STUB (0x80000100): the joystick surface
 #    reaches a stubbed entry in the baked DLL set. Its subject is game
 #    hardware, not audio — no joystick device class exists on proskrnl and
@@ -1789,7 +1807,7 @@ winmm_test.exe:wave:600
 # 1334 tests, 31 todo, 0 failures). Oracle-side: green modulo host IPv6
 # (the v6 test_bind block needs a ::1 the measuring container lacked; CI
 # hosts carry it).
-ws2_32_test.exe:afd:600
+ws2_32_test.exe:afd:0:600
 # 1. RED — sock (measured 2026-08-18, post-resolver): the startup crash
 #    is gone; the suite runs. The residual families each have an owner:
 #    WSAAsyncSelect/message-pump rows (user32 glue — the GUI winetest
@@ -1805,7 +1823,7 @@ ws2_32_test.exe:afd:600
 #    user32 families), so the pair cannot convict the kernel here
 #    (Art. 6); it unparks family by family as their owners land.
 #    # TODO: Implement (family by family; user32 rows need the GUI shelf)
-# ws2_32_test.exe:sock:900
+# ws2_32_test.exe:sock:0:900
 # 2. RED — protocol (measured 2026-08-18, its first real measurement —
 #    "triaged" is Net-3's done-when word): the resolver surface itself is
 #    green on both runners (getaddrinfo/gethostby*/getservby*/
@@ -1819,4 +1837,4 @@ ws2_32_test.exe:afd:600
 #    is in the verdict path, non-hermetic by construction (guest DNS
 #    rides slirp to whatever resolver the runner has).
 #    # TODO: Implement (the GUI winetest shelf; an offline-DNS answerer)
-# ws2_32_test.exe:protocol:600
+# ws2_32_test.exe:protocol:0:600
