@@ -130,9 +130,9 @@ user32_test.exe:msg:17:3000
 # so the GUI half of the frontier is a LIST rather than an absence — the same
 # rule manifest.txt states for the CUI half: coverage is the comments, the
 # gate is the active list, and a pair that is not green today is parked with
-# its triage rather than deleted. tools/check_wtest_manifests.py is what keeps
-# the two files exhaustive over the modules this tree builds test binaries
-# for.
+# its triage rather than deleted. tools/check_wtest_manifests.py (make
+# gen-check) is what keeps the two files exhaustive over the modules this tree
+# builds test binaries for.
 #
 # WHAT IS NOT WRITTEN HERE, DELIBERATELY: a failure count. None of these has
 # been run on either half, so there is nothing measured to record, and a
