@@ -3,10 +3,11 @@
 # on proskrnl over the full GUI stack (win32u + wineserver-lite + winefb).
 #
 # COVERAGE IS THE COMMENTS, THE GATE IS THE ACTIVE LIST, exactly as in
-# manifest.txt. Active today: user32:msg alone, GUI-5's trophy — whole-module,
-# budget-ratcheted, the block below is its whole story. Every other user32
-# pair is listed at the end of this file, parked, unmeasured, each with the
-# TODO that says so.
+# manifest.txt. Active today: user32:msg — GUI-5's trophy, whole-module and
+# budget-ratcheted, the block below is its whole story — and user32:wsprintf,
+# measured green on both halves. Every other user32 pair is listed at the end
+# of this file, parked and unmeasured, each with the TODO that says so, and so
+# are the three CUI-module pairs whose subject needs a desktop.
 #
 # There IS an oracle half, and there was not until the oracle got a display.
 # Through GUI-6 the pinned wine was built --without-x, and under its null
@@ -295,10 +296,13 @@ user32_test.exe:msg:16:3000
 # TODO: Implement
 # user32_test.exe:winstation
 
-# Wine's tests for the wsprintf functions.
-# NOT MEASURED on either half.
-# TODO: Implement
-# user32_test.exe:wsprintf
+# MEASURED AND GREEN on both halves, so it is active: the first user32 pair
+#     besides msg to join the gate. `tests/run/run.sh winetest-gui
+#     user32:wsprintf` -- oracle PASS, kernel PASS, zero failing assertions on
+#     either side (one run, this container). It is a formatting suite:
+#     wsprintfA/W over the argument shapes, no windows, no timers, so nothing
+#     in it is settled by machine speed the way msg's volatile families are.
+user32_test.exe:wsprintf
 
 # --- the GUI-DEPENDENT pairs of the CUI modules -----------------------------
 # Not user32's, and here for the reason manifest.txt's rule (c) gives: the
