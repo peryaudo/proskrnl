@@ -77,12 +77,31 @@
 #   20  the process idle event is a GUI-process thing
 #   18  the forced desktop window no longer re-homes the process
 #   17  the two speed-dependent families cannot both be at maximum
-#   16  the ShowWindow(SW_SHOWMAXIMIZED) todo tag is retired in the fork's
-#       suite, so passing that sequence stops costing a failure. DERIVED, not
-#       measured: the term simply leaves the arithmetic below (an ok_sequence
-#       with todo=FALSE that MATCHES reports nothing, and both halves matched
-#       -- winetest only says "marked todo_wine but succeeds" when the whole
-#       sequence matched). The next measured run is what confirms it.
+#   16  the ShowWindow(SW_SHOWMAXIMIZED) todo tags are retired in the fork's
+#       suite (BOTH of them -- the sequence flag and the entry's own
+#       msg_todo, the second only visible once the first was gone), so
+#       passing that sequence stops costing a failure. Derived when written
+#       and CONFIRMED since: the run below measures 13 and the ShowWindow
+#       todo-success is absent from it on proskrnl's side too.
+#
+# MEASURED, this pin, on a TCG container (build/tests/winetest-gui-msg.log
+# names every one): 13 = 12 "Test failed" + 1 "succeeded inside todo".
+#
+#   5  test_PeekMessage3 (msg.c:14708-:14779) -- the volatile timer family,
+#      five of its seven on the failing side this run
+#   2  the explorerless fixture: test_SetForegroundWindow (msg.c:16887) and
+#      test_SetFocus (msg.c:20062)
+#   5  test_WM_COPYDATA (msg.c:21285-:21315), failing as a block
+#   1  msg.c:18349 succeeding inside its todo block -- the "we are faster than
+#      Wine" term
+#
+# Two things that run says, and neither lowers the ceiling on its own. The
+# INTERTHREAD pair did not fire at all: that is one run, not a fix, and the
+# ratchet moves on fixes (a triage or a second confirming run is what would
+# take the bound to 14). And the timer family and msg.c:18349 DID co-occur,
+# which the arithmetic below used to say they could not -- the anti-
+# correlation is a gradient, not a switch, so the bound now rests on the
+# weaker and measured claim that the two together stay within seven.
 #
 # The count has two parts.
 #
@@ -112,16 +131,21 @@
 #
 #   slower  test_PeekMessage3 fails more of its seven (more guest time
 #           elapses per block), and test_WM_COPYDATA keeps failing all five;
-#   faster  both of those pass, but msg.c:18349 starts failing - it is a
-#           stale todo_wine on a 500 ms wait, so it counts against us
+#   faster  those timer assertions pass, but msg.c:18349 starts failing - it
+#           is a stale todo_wine on a 500 ms wait, so it counts against us
 #           exactly when we are fast enough to BEAT Wine.
 #
-# A machine slow enough to fail all seven timer assertions is far too slow
-# to win that 500 ms race, so 7 and that 1 cannot co-occur. The bound is
+# The measured run above has FIVE of the seven timer assertions failing and
+# msg.c:18349 counting as well, so this is a trade, not an exclusion: the
+# machine that fails more of the seven is the machine that stops winning the
+# 500 ms race, and the two together have not exceeded seven on any machine
+# measured. That sum is what the ceiling below budgets for. The bound is
 #
 #   2 (explorerless fixture) + 2 (interthread) + 0 (todo, ShowWindow: the
-#     tag is gone) + 5 (WM_COPYDATA) + 7 (test_PeekMessage3 worst case)
-#     + 0 (msg.c:18349 cannot also fail)
+#     tags are gone) + 5 (WM_COPYDATA)
+#     + 7 (test_PeekMessage3 and msg.c:18349 TOGETHER: measured at 5+1 on
+#          this container, and the two trade against each other with machine
+#          speed rather than adding)
 #   = 16
 #
 # and a run above it is a real regression rather than a slower runner.
