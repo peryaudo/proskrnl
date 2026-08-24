@@ -1,4 +1,4 @@
-# The ORACLE half of the guiwtest ratchet (tests/run/run.sh guiwtest_oracle):
+# The ORACLE half of the winetest-gui ratchet (tests/run/run.sh winetest_gui_oracle):
 # the failure count Wine's own user32:msg reaches on the PINNED WINE ITSELF,
 # on the runner's Xvfb. Same rule as the kernel half's msg-budget.txt — the
 # number only ever goes DOWN, in the same commit as whatever earned it, and a

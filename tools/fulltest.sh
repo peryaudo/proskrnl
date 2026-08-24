@@ -157,7 +157,7 @@ NPROC="$( (nproc || sysctl -n hw.ncpu) 2>/dev/null || echo 4)"
 # 32-core KVM box at -j8, seconds, which is also what the summary table this
 # script prints reports — re-order from a run of your own if these drift:
 #
-#   guiwtest 114  winetest 78  wow64gui 76  gui5con 72  tornwrite 66  gui4 62
+#   winetest-gui 114  winetest 78  wow64gui 76  gui5con 72  tornwrite 66  gui4 62
 #   cui8 61  gui3 57  gui5 56  gui2 54  cui9 46  scm 39  proskrnl 38  firstboot 36
 #   persist 34  cui7 34  gui 32  procs 31  files 30  console 30  boot 30
 #   cui6 29  oracle 19  fatstress 19  fuzz 14  fatinterop 8  frontier 0
@@ -166,13 +166,13 @@ NPROC="$( (nproc || sysctl -n hw.ncpu) 2>/dev/null || echo 4)"
 # second stack, on a bigger image), so it is scheduled beside it until a
 # run of your own measures it.
 #
-# 1165 s of legs; 150 s of wall clock. The floor is guiwtest at 114 s, so the
+# 1165 s of legs; 150 s of wall clock. The floor is winetest-gui at 114 s, so the
 # schedule is already within a third of the best any width could do.
 # net3 and resolvunit are in the list because CI runs them (test.yml, the cui-b
 # shard) and "prove it with make fulltest" must not be a weaker gate than CI.
 # net3 drops out on its own when the pinned curl.exe is absent (the leg refuses
 # loudly before building anything).
-ALL_LEGS=(guiwtest winetest wow64gui wow64aud winefbunit gui5con gui6 tornwrite gui4 cui8 gui3 gui5 gui2 cui9
+ALL_LEGS=(winetest-gui winetest wow64gui wow64aud winefbunit gui5con gui6 tornwrite gui4 cui8 gui3 gui5 gui2 cui9
           scm proskrnl firstboot persist cui7 gui audio procs files console boot
           cui6 net net3 resolvunit oracle wow64 fatstress fuzz fatinterop frontier)
 
@@ -275,7 +275,7 @@ run_leg() {
             # policy regression names itself in the same summary table.
             cmd=("$view/tests/run/run.sh" "$leg")
             ;;
-        guiwtest)
+        winetest-gui)
             export TIMEOUT=3600
             cmd=("$view/tests/run/run.sh" "$leg")
             ;;

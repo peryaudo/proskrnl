@@ -1,4 +1,4 @@
-# The guiwtest ratchet (tests/run/run.sh guiwtest): the currently-accepted
+# The winetest-gui ratchet (tests/run/run.sh winetest-gui): the currently-accepted
 # user32:msg failure count on proskrnl. Only ever DECREASE this number, in
 # the same commit as the fix that earned it (G13); the leg fails on any
 # count above it, and on any CRASH exit regardless of the number.
@@ -21,7 +21,7 @@
 # The 9999 sentinel is retired: the whole module runs to its own verdict
 # (winetest's failure count arrives as the NT exit status). The named
 # divergences behind the current number are listed in docs/03 "GUI-5
-# winetest notes"; 0 is the end state, and build/tests/guiwtest-msg.log
+# winetest notes"; 0 is the end state, and build/tests/winetest-gui-msg.log
 # names whichever are left after any run (tools/unscreen.py replays them
 # out of the console screen diff).
 #

@@ -164,7 +164,7 @@ Here the filter is the same `subtests` boot string, carrying the selected PAIR N
 `<module>:<subtest>` key is a pattern that matches exactly its own pair, so the harness's
 CUI/audio partition — which needs two boots, one with a virtio-snd device — reaches the
 guest as a decision rather than as two baked manifests. Both curated manifests
-(`manifest.txt`, and `manifest-gui.txt` for the `guiwtest` trophy) are baked verbatim on
+(`manifest.txt`, and `manifest-gui.txt` for the `winetest-gui` trophy) are baked verbatim on
 every image and the boot's `leg` picks which one the sweep reads.
 
 It used to be a **generated manifest**: the selected lines were written out and baked as
@@ -195,7 +195,7 @@ is why the runner owns the display instead of borrowing one:
   refuses a pinned tree whose `config.h` has no `SONAME_LIBX11`. Both failures name
   themselves; neither can be answered from the null driver by accident.
 
-This is what makes a GUI winetest gate two-sided at all — `run.sh guiwtest` runs Wine's
+This is what makes a GUI winetest gate two-sided at all — `run.sh winetest-gui` runs Wine's
 own `user32:msg` under the oracle as well as on proskrnl (docs/03 "GUI-5 winetest notes").
 
 ### The oracle leg is fanned out (`ORACLE_JOBS`)

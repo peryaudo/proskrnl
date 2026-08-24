@@ -5,7 +5,7 @@
 # 80-column screen buffer and the serial backend emits the DIFF (cursor moves,
 # erases, the changed cells) rather than the characters a program printed. A
 # grep for a test's own output on the raw serial log therefore finds text
-# shredded into fragments — which is exactly what the guiwtest gate reads
+# shredded into fragments — which is exactly what the winetest-gui gate reads
 # (docs/03 "GUI-5 winetest notes": the leg takes its VERDICT from the kernel's
 # own line for that reason, but the per-assertion text is what a human needs to
 # know WHICH assertion failed, and it was only reachable by eye).
@@ -21,7 +21,7 @@
 # in, colour, positioning) is dropped, and the remaining printable runs are
 # the program's own characters in order.
 #
-#   unscreen.py < build/tests/guiwtest-serial.log > readable.log
+#   unscreen.py < build/tests/winetest-gui-serial.log > readable.log
 #   unscreen.py --grep 'Test failed' serial.log
 #
 # The reconstruction is best-effort by construction — a repaint that rewrites

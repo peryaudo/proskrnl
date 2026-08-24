@@ -377,7 +377,7 @@ export LC_ALL
 # mode usually runs.
 RUNS_ORACLE=0
 case "$MODE" in
-    oracle|fuzz|guiwtest) RUNS_ORACLE=1 ;;
+    oracle|fuzz|winetest-gui) RUNS_ORACLE=1 ;;
     winetest)             [[ -z "${WTEST_NO_ORACLE:-}" ]] && RUNS_ORACLE=1 ;;
 esac
 
@@ -390,7 +390,7 @@ esac
 # forgetting one is a named failure, not a quiet second oracle.
 RUNS_WINE=0
 case "$MODE" in
-    oracle|fuzz|firstboot|winefbunit|resolvunit|guiwtest) RUNS_WINE=1 ;;
+    oracle|fuzz|firstboot|winefbunit|resolvunit|winetest-gui) RUNS_WINE=1 ;;
     winetest) [[ -z "${WTEST_NO_ORACLE:-}" ]] && RUNS_WINE=1 ;;
 esac
 # find_wine's refusal cannot stop the run from where it fires: inside
@@ -1055,7 +1055,7 @@ wtest_is_audio() {   # $1 = exe
 # (tests/winetest/manifest.txt) must exit 0 under the pinned oracle AND on
 # proskrnl. The manifest is the FULL non-GUI sweep — every subtest of ntdll,
 # kernel32, msvcrt, ucrtbase and programs/cmd (advapi32 and user32 excluded;
-# user32:msg has its own leg, guiwtest) — so the leg reports the whole
+# user32:msg has its own leg, winetest-gui) — so the leg reports the whole
 # frontier rather than the part already crossed.
 # The binaries are the pinned tree's own test objects linked
 # standalone (Makefile `wtests`) — ONE binary, two runners, like everything
@@ -1228,7 +1228,7 @@ winetest() {
         # (destroy_thread_windows -> next_thread_user_object).
         # GUEST_SERIAL=1 because the verdict is still a serial line: PASS_RE
         # greps this log, so the console must not move into a window — the
-        # guiwtest leg's arrangement, and the same PASS_RE.
+        # winetest-gui leg's arrangement, and the same PASS_RE.
         local imgAudio
         imgAudio="$(test_image_copy "$ROOT/build/tests/wtest-audio$tag.hdd")" || exit 1
         LOG="$logAudio" MEM=1024M PASS_RE="\[KTEST\] wtest done" TIMEOUT="${TIMEOUT:-1800}" \
@@ -1291,7 +1291,7 @@ winetest() {
 # failure" — SINGULAR. A `failures\)` match therefore skipped the parent and
 # silently read a child's zero. The parent's line is the LAST one (it waits
 # on its children before printing), and its count is also its exit status.
-guiwtest_oracle() {   # $1 = the user32_test.exe both halves run
+winetest_gui_oracle() {   # $1 = the user32_test.exe both halves run
     local exe="$1"
     local budgetfile="$ROOT/tests/winetest/msg-budget-oracle.txt"
     local olog="$BUILD/wtests/user32_test.msg.oracle.log"
@@ -1301,7 +1301,7 @@ guiwtest_oracle() {   # $1 = the user32_test.exe both halves run
     # pipeline and `set -e` kills the leg BEFORE the message below can say so.
     budget="$(grep -vE '^\s*(#|$)' "$budgetfile" | head -1 | tr -d '[:space:]' || true)"
     if ! [[ "$budget" =~ ^[0-9]+$ ]]; then
-        echo "== guiwtest-oracle: msg-budget-oracle.txt holds no number ==" >&2
+        echo "== winetest-gui-oracle: msg-budget-oracle.txt holds no number ==" >&2
         return 2
     fi
     # A tree built before the GUI-5 test target has no user32_test.exe (the
@@ -1310,7 +1310,7 @@ guiwtest_oracle() {   # $1 = the user32_test.exe both halves run
     # msg run never finished" — the --without-x hang's signature — for a file
     # that was simply not there.
     if [[ ! -f "$exe" ]]; then
-        echo "== guiwtest-oracle: FAIL (no $exe — the pinned tree's user32 test" \
+        echo "== winetest-gui-oracle: FAIL (no $exe — the pinned tree's user32 test" \
              "module is not built; run tools/setup_linux.sh) ==" >&2
         return 1
     fi
@@ -1319,7 +1319,7 @@ guiwtest_oracle() {   # $1 = the user32_test.exe both halves run
     # rule that an oracle never runs in $ROOT is the harness's, not the
     # test's. The cap is a BACKSTOP against a wedged run eating the CI job,
     # not a budget — the run takes minutes.
-    (cd "$BUILD/wtests" && timeout -s KILL "${GUIWTEST_ORACLE_TIMEOUT:-1800}" \
+    (cd "$BUILD/wtests" && timeout -s KILL "${WINETEST_GUI_ORACLE_TIMEOUT:-1800}" \
         "$WINE" "$exe" msg) >"$olog" 2>&1 || rc=$?
     failures="$(grep -oE '[0-9]+ (failure|failures)\)' "$olog" | tail -1 | grep -oE '^[0-9]+' || true)"
     if [[ -z "$failures" ]]; then
@@ -1328,7 +1328,7 @@ guiwtest_oracle() {   # $1 = the user32_test.exe both halves run
         # test_SendMessage_other_thread on a window that was never created),
         # so it is named rather than folded into a count — a run that did not
         # run is not a measurement.
-        echo "== guiwtest-oracle: FAIL (no winetest summary — the msg run never" \
+        echo "== winetest-gui-oracle: FAIL (no winetest summary — the msg run never" \
              "finished, exit=$rc; see $olog) =="
         return 1
     fi
@@ -1337,22 +1337,22 @@ guiwtest_oracle() {   # $1 = the user32_test.exe both halves run
     # neither number may be graded — it is reported as a broken measurement
     # rather than resolved in favour of whichever is smaller.
     if (( rc < 255 && rc != failures )); then
-        echo "== guiwtest-oracle: FAIL (the run exited $rc but its summary line" \
+        echo "== winetest-gui-oracle: FAIL (the run exited $rc but its summary line" \
              "says $failures — the runner cannot tell what the oracle answered;" \
              "see $olog) =="
         return 1
     fi
-    echo "[KTEST] guiwtest-oracle user32:msg failures=$failures budget=$budget"
+    echo "[KTEST] winetest-gui-oracle user32:msg failures=$failures budget=$budget"
     if (( failures > budget )); then
-        echo "== guiwtest-oracle: FAIL ($failures failures against a budget of" \
+        echo "== winetest-gui-oracle: FAIL ($failures failures against a budget of" \
              "$budget on unmodified Wine; see $olog) =="
         return 1
     fi
     if (( failures < budget )); then
-        echo "== guiwtest-oracle: PASS — and $failures < budget $budget:" \
+        echo "== winetest-gui-oracle: PASS — and $failures < budget $budget:" \
              "ratchet msg-budget-oracle.txt down =="
     else
-        echo "== guiwtest-oracle: PASS ($failures failures, at budget) =="
+        echo "== winetest-gui-oracle: PASS ($failures failures, at budget) =="
     fi
     return 0
 }
@@ -1363,7 +1363,7 @@ guiwtest_oracle() {   # $1 = the user32_test.exe both halves run
 # windowed message machinery — swept by the same session-manager wtest runner the
 # CUI manifest uses (per-pair timeout via the manifest's third field).
 #
-# TWO HALVES since the oracle gained a display driver: guiwtest_oracle above
+# TWO HALVES since the oracle gained a display driver: winetest_gui_oracle above
 # runs the same binary under the pinned wine on Xvfb (it was PROSKRNL-ONLY
 # while the oracle was --without-x — under the null display driver user32
 # refuses every window and the suite hangs; tests/winetest/manifest-gui.txt
@@ -1375,7 +1375,7 @@ guiwtest_oracle() {   # $1 = the user32_test.exe both halves run
 # than the budget is a regression and fails the leg, fewer is a note to
 # ratchet the file down in the commit that earned it. 0 is the milestone's
 # end state.
-guiwtest() {
+winetest_gui() {
     local budgetfile="$ROOT/tests/winetest/msg-budget.txt"
     local budget
     # `|| true` for the reason the oracle half's identical pipeline carries one:
@@ -1383,7 +1383,7 @@ guiwtest() {
     # exit 1 and kills the leg before the message below can name the cause.
     budget="$(grep -vE '^\s*(#|$)' "$budgetfile" | head -1 | tr -d '[:space:]' || true)"
     if ! [[ "$budget" =~ ^[0-9]+$ ]]; then
-        echo "== guiwtest: msg-budget.txt holds no number ==" >&2
+        echo "== winetest-gui: msg-budget.txt holds no number ==" >&2
         return 2
     fi
     local testexe="$ROOT/third_party/wine/dlls/user32/tests/x86_64-windows/user32_test.exe"
@@ -1393,20 +1393,20 @@ guiwtest() {
     # hide the leg behind it, and the number the ratchet wants is measured
     # either way. Both are folded into the leg's exit status at the end.
     local oracleFail=0
-    guiwtest_oracle "$testexe" || oracleFail=1
+    winetest_gui_oracle "$testexe" || oracleFail=1
 
     # The test image carries user32_test.exe and BOTH manifests; the leg name
     # picks manifest-gui.txt (user/smss/session.c SessionRun). It used to bake
     # an image of its own, whose payload was a hand-copied subset of the
     # winetest image's — the kind of second list that drifts.
     local img
-    img="$(test_image_copy "$ROOT/build/tests/guiwtest.hdd")" || exit 1
+    img="$(test_image_copy "$ROOT/build/tests/winetest-gui.hdd")" || exit 1
 
     # 2 GiB: no COW and this boot holds the server, conhost, a multi-MB
     # test binary and its spawned children resident at once.
-    local log="$ROOT/build/tests/guiwtest-serial.log"
+    local log="$ROOT/build/tests/winetest-gui-serial.log"
     LOG="$log" MEM=2048M PASS_RE="\[KTEST\] wtest done" TIMEOUT="${TIMEOUT:-3600}" \
-        GUEST_SERIAL=1 GUEST_LEG=guiwtest \
+        GUEST_SERIAL=1 GUEST_LEG=winetest-gui \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
 
     # msg.c's own assertion text, replayed out of the console screen diff
@@ -1414,7 +1414,7 @@ guiwtest() {
     # kernel's line below — but a budget above zero is a list of named
     # divergences, and this file is the only place their names survive.
     "$ROOT/tools/unscreen.py" --grep 'Test (failed|succeeded)|marked todo|unhandled exception' \
-        "$log" > "$ROOT/build/tests/guiwtest-msg.log" 2>/dev/null || true
+        "$log" > "$ROOT/build/tests/winetest-gui-msg.log" 2>/dev/null || true
 
     # The ratchet input is the KERNEL's own verdict line (DbgPrint straight
     # to serial — never through the console, whose 80-column screen diff
@@ -1439,7 +1439,7 @@ guiwtest() {
     sweptLine="$(grep -aE '^\[KTEST\] wtest done ' "$log" | tail -1 | tr -d '\r' || true)"
     swept="$(sed -nE 's/.*tests=([0-9]+).*/\1/p' <<<"$sweptLine")"
     if [[ "$swept" != "1" ]]; then
-        echo "== guiwtest: FAIL (the manifest-gui sweep reported tests='${swept:-none}'," \
+        echo "== winetest-gui: FAIL (the manifest-gui sweep reported tests='${swept:-none}'," \
              "expected the one msg pair; see $log) =="
         return 1
     fi
@@ -1447,7 +1447,7 @@ guiwtest() {
     local verdict failures
     verdict="$(grep -oE '\[KTEST\] wtest user32_test\.exe:msg (PASS|FAIL \(exit=0x[0-9a-f]+\))' "$log" | tail -1 || true)"
     if [[ -z "$verdict" ]]; then
-        echo "== guiwtest: FAIL (no kernel verdict — hung, panicked or timed out; see $log) =="
+        echo "== winetest-gui: FAIL (no kernel verdict — hung, panicked or timed out; see $log) =="
         return 1
     fi
     if [[ "$verdict" == *PASS ]]; then
@@ -1458,25 +1458,25 @@ guiwtest() {
         # crash) is not a count and no budget forgives it.
         if (( failures < 0 || failures > 65535 )); then
             printf -v crash '0x%x' "$(( failures & 0xffffffff ))"
-            echo "== guiwtest: FAIL (the msg run crashed, exit=$crash; see $log) =="
+            echo "== winetest-gui: FAIL (the msg run crashed, exit=$crash; see $log) =="
             return 1
         fi
     fi
-    echo "[KTEST] guiwtest user32:msg failures=$failures budget=$budget"
+    echo "[KTEST] winetest-gui user32:msg failures=$failures budget=$budget"
     if (( failures > budget )); then
-        echo "== guiwtest: FAIL ($failures failures against a budget of $budget; see $log) =="
+        echo "== winetest-gui: FAIL ($failures failures against a budget of $budget; see $log) =="
         return 1
     fi
     if (( failures < budget )); then
-        echo "== guiwtest: PASS — and $failures < budget $budget: ratchet msg-budget.txt down =="
+        echo "== winetest-gui: PASS — and $failures < budget $budget: ratchet msg-budget.txt down =="
     else
-        echo "== guiwtest: PASS ($failures failures, at budget) =="
+        echo "== winetest-gui: PASS ($failures failures, at budget) =="
     fi
     # The kernel half passed; the leg has not until both halves have. Every
     # `return 1` above already fails it, so this is the only path where the
     # oracle's verdict can still decide.
     if (( oracleFail )); then
-        echo "== guiwtest: FAIL (the kernel half passed, the ORACLE half did not) =="
+        echo "== winetest-gui: FAIL (the kernel half passed, the ORACLE half did not) =="
         return 1
     fi
     return 0
@@ -4100,8 +4100,8 @@ case "$MODE" in
     gui6)     gui6 ;;
     winefbunit) winefbunit ;;
     resolvunit) resolvunit ;;
-    guiwtest) guiwtest ;;
-    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|cui9|net|net3|wow64|fatinterop|fatstress|tornwrite|gui|audio|wow64aud|gui2|gui3|gui4|gui5|gui5con|wow64gui|gui6|winefbunit|resolvunit|guiwtest}" >&2
+    winetest-gui) winetest_gui ;;
+    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|cui9|net|net3|wow64|fatinterop|fatstress|tornwrite|gui|audio|wow64aud|gui2|gui3|gui4|gui5|gui5con|wow64gui|gui6|winefbunit|resolvunit|winetest-gui}" >&2
        echo "       subtest = a tests/ntapi test's base name, or a glob over base names" >&2
        echo "       pair    = a winetest <module>[:<subtest>] (ntdll, printf, ntdll:env), or a glob" >&2
        echo "                 (iteration only — the gate is the unfiltered run)" >&2

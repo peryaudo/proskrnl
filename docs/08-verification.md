@@ -452,7 +452,7 @@ Two knobs carry judgement rather than taste:
   under a throttled disk; `procs` and `gui5con` have choreography with sleeps in it), and a
   box with every core saturated is a different machine. A quarter is where the two terms of
   the wall clock meet: on a 32-core KVM box the 26 legs are ~1089 s of work whose longest
-  single leg is 114 s (`guiwtest`), and `-j8` lands the whole suite in **150 s** — no width
+  single leg is 114 s (`winetest-gui`), and `-j8` lands the whole suite in **150 s** — no width
   can do better than ~120 s, and buying that last 20% with a saturated box would be paying
   in false reds.
 - **`tests/run/run.sh prebuild`** builds the ~165 ntapi test `.exe`s once, fanned out. It

@@ -17,7 +17,7 @@
 # advapi32 is deliberately out: its subject is the security/registry service
 # surface, covered by the CUI-2/CUI-3 legs (tests/run/run.sh console, scm) and
 # by tests/ntapi, not by this gate. user32 is out too — the GUI trophy has its
-# own manifest (manifest-gui.txt, tests/run/run.sh guiwtest).
+# own manifest (manifest-gui.txt, tests/run/run.sh winetest-gui).
 #
 # COVERAGE IS THE COMMENTS, THE GATE IS THE ACTIVE LIST. This file lists
 # every pair the five modules have; the ACTIVE (uncommented) lines are the

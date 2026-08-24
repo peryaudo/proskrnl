@@ -30,7 +30,7 @@
 # check — only in the direction of a new suite nobody added.
 #
 # SCOPE. Deliberately only the standard image: `make test` is the leg that owns
-# the kmt verdicts. The special images (guiwtest, gui*, fatinterop) legitimately
+# the kmt verdicts. The special images (winetest-gui, gui*, fatinterop) legitimately
 # print FAIL for suites whose modules they do not carry, which is why they set
 # their own PASS_RE and do not run this.
 set -uo pipefail

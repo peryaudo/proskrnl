@@ -1,4 +1,4 @@
-# The GUI winetest manifest (tests/run/run.sh guiwtest) — GUI-5's trophy
+# The GUI winetest manifest (tests/run/run.sh winetest-gui) — GUI-5's trophy
 # gate: Wine's own user32:msg, whole-module, on proskrnl over the full GUI
 # stack (win32u + wineserver-lite + winefb).
 #
@@ -9,7 +9,7 @@
 # in test_SendMessage_other_thread's INFINITE wait, so the recorded oracle
 # baseline was `cannot run`, not a count. The oracle is now --with-x on an
 # Xvfb the runner starts (tools/setup_linux.sh, tests/run/run.sh
-# start_xvfb), and run.sh guiwtest runs THIS pair on both sides.
+# start_xvfb), and run.sh winetest-gui runs THIS pair on both sides.
 #
 # The oracle half is not the spec authority and the switch did not make it
 # one — an X11 message environment is no more "what NT does" than nulldrv

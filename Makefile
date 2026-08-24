@@ -768,7 +768,7 @@ WSRESOLV := $(BUILD)/modules/wsresolv.dll
 # the two were separate lists and they drifted, exactly the way the
 # print-winfiles note below (beside WINFILES_DEPS) says such pairs do.
 # hid.dll was stripped by the one and missing from the other, which nothing
-# noticed while the guiwtest image carried a hand-written DLL list of its
+# noticed while the winetest-gui image carried a hand-written DLL list of its
 # own that happened to include it. Unified onto one image, user32_test.exe
 # could not load and the whole msg gate died with STATUS_DLL_NOT_FOUND
 # (0xc0000135). A name is now baked because it is built, and there is no
@@ -1365,7 +1365,7 @@ $(WIN32U): $(W32U_OBJS) $(W32U_BUILD)/prsk_request_names.o $(W32U_DEF) $(FREETYP
 	@# itself links CLEANLY against the import and starts answering -- turning a
 	@# refusal that names itself on serial into a plausible answer, silently, at
 	@# link time. That is how wine_server_handle_to_fd stopped refusing when the
-	@# state machine left this DLL: nothing failed, guiwtest just died with no
+	@# state machine left this DLL: nothing failed, winetest-gui just died with no
 	@# verdict. The definitions live in wineserver-lite/common/srv_glue.c; this
 	@# asserts none of them slipped back to the import.
 	@# Scoped to the IMPORT directory: this DLL legitimately EXPORTS
@@ -1439,7 +1439,7 @@ WINESTRIP_GUI_DLLS := $(foreach d,$(WINESTRIP_GUI_NAMES),$(WINESTRIP)/$(d).dll)
 $(foreach d,$(WINESTRIP_GUI_NAMES),$(eval $(call WINESTRIP_RULE,$(d))))
 
 # The named handle on that set, for legs that assemble their own image spec
-# instead of depending on an IMG_* rule (tests/run/run.sh guiwtest): without
+# instead of depending on an IMG_* rule (tests/run/run.sh winetest-gui): without
 # it a clean tree stages the CUI set only and mkimage dies on the first
 # missing win: file.
 winestrip-gui: $(WINESTRIP_GUI_DLLS)

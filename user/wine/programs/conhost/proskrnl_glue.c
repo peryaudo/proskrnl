@@ -51,7 +51,7 @@ int __cdecl wmain( int argc, WCHAR *argv[] );
  *
  * Deliberately NOT a disk probe: every image carries the desktop server now,
  * so "is wineserver-lite here" no longer distinguishes anything — which is
- * exactly what a disk probe would have got wrong on the gui3/gui4/guiwtest
+ * exactly what a disk probe would have got wrong on the gui3/gui4/winetest-gui
  * images back when it might have been tried. */
 static int conhost_wants_window( void )
 {

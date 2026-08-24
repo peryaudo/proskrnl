@@ -209,7 +209,7 @@ NTSTATUS NtQueryInformationFile(HANDLE handle, PIO_STATUS_BLOCK iosb, PVOID buff
          * not a contract, so no test pins it. The class goes on serial: the
          * dispatcher's armed-panic line names the syscall but not its
          * arguments, and "which class" is the whole content of this refusal
-         * (one guiwtest boot was spent inferring it from the caller). */
+         * (one winetest-gui boot was spent inferring it from the caller). */
         DbgPrint("NtQueryInformationFile: unbuilt info class %d\n", (int)informationClass);
         return STATUS_NOT_IMPLEMENTED;
     }
