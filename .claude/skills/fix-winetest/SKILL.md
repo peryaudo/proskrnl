@@ -1,19 +1,59 @@
 ---
-name: fix-cui-winetest
-description: Take ONE `# TODO: Implement` work item from the CUI winetest manifest (tests/winetest/manifest.txt, planned in docs/21), pin it against the oracle, implement it, re-measure, un-park the pair if it went green, then gate-check, prove it with `make fulltest`, and rebase-merge to main. The goal is PROGRESS toward every winetest passing — a change that clears assertions but leaves the pair red, or that reveals a wedge or a past false green, still lands. Refuses when no unparkable item is left. Invoke manually with /fix-cui-winetest; never triggered automatically.
+name: fix-winetest
+description: Take ONE `# TODO: Implement` work item from either winetest manifest — CUI (tests/winetest/manifest.txt, run.sh winetest) or GUI (tests/winetest/manifest-gui.txt, run.sh winetest-gui) — pin it against the oracle, implement it, re-measure, un-park the pair if it went green, then gate-check, prove it with `make fulltest`, and rebase-merge to main. The goal is PROGRESS toward every winetest passing — a change that clears assertions but leaves the pair red, or that reveals a wedge or a past false green, still lands. Refuses when no unparkable item is left. Invoke manually with /fix-winetest; never triggered automatically.
 argument-hint: [pair-or-W-item]
 allowed-tools: Bash, Read, Write, Edit, Glob, Grep, Skill, WebFetch, TaskCreate, TaskUpdate, TaskList
 ---
 
-# fix-cui-winetest
+# fix-winetest
 
-Close **one** entry on the CUI winetest frontier, end to end: pick it, pin it,
-build it, prove it, land it.
+Close **one** entry on the winetest frontier, end to end: pick it, pin it,
+build it, prove it, land it. **Either frontier** — the CUI manifest
+(`tests/winetest/manifest.txt`, leg `winetest`) or the GUI one
+(`manifest-gui.txt`, leg `winetest-gui`). They are one workflow with two
+manifests and two legs; every step below says which it means when it matters,
+and the differences are collected under "The two frontiers" just after this.
 
 You run this yourself, in the main conversation — do **not** hand it to a
-subagent. `$ARGUMENTS`, if present, names the pair (`ntdll:virtual`) or the
-docs/21 item (`W8`) to work; otherwise you choose. Work **one** item.
+subagent. `$ARGUMENTS`, if present, names the pair (`ntdll:virtual`,
+`user32:win`) or the docs/21 item (`W8`) to work; otherwise you choose. Work
+**one** item.
 Finishing one item properly beats starting three.
+
+## The two frontiers
+
+Same grammar, same graders, same rules. Below: the differences that change
+what you type, then the one that changes what you may conclude.
+
+| | CUI — `manifest.txt` | GUI — `manifest-gui.txt` |
+|---|---|---|
+| leg | `tests/run/run.sh winetest [pair...]` | `tests/run/run.sh winetest-gui [pair...]` |
+| machine | `Gui=0` boot (audio pairs get their own `Gui=1` boot with virtio-snd) | `Gui=1` boot: win32u, wineserver-lite, winefb, a desktop |
+| modules | ntdll, kernel32, msvcrt, ucrtbase, cmd, ws2_32, mmdevapi, winmm | user32, plus the CUI-module pairs whose subject NEEDS a desktop (`ntdll:om`, `ntdll:rtl`, `kernel32:toolhelp`) |
+| serial log | `build/tests/wtest-subset-serial.log` | `build/tests/winetest-gui-subset-serial.log`, plus `winetest-gui-subset-msg.log` — the assertion text replayed through `tools/unscreen.py`, because this leg's console is an 80-column screen diff that mangles it (the `-msg` name is historical: it holds whichever pairs the run selected) |
+| budgets | every active pair is 0 (green or parked) | `user32:msg` carries a budget; everything else is 0 |
+
+Both manifests speak `<exe>:<subtest>[:<budget>][:<timeout_s>]`, both legs
+grade through the same `wtest_grade`, and both demand the ORACLE half green —
+a budget is a ceiling over OUR divergences, and on unmodified Wine nothing is
+ours. `tools/check_wtest_manifests.py` (via `make gen-check`) keeps both files
+exhaustive over the pin, so a pair you delete instead of parking is a gate
+failure, not a silent hole.
+
+**The GUI leg is slower and its subset filter is what makes it workable.**
+Unfiltered it runs `user32:msg`, an hour under TCG. Always name your pair
+(`run.sh winetest-gui user32:win`) while iterating; the unfiltered run is for
+the verdict, and `make fulltest` takes it anyway.
+
+**On the GUI frontier, a failure is only yours once the desktop is ruled
+out.** These pairs run above win32u, wineserver-lite and winefb, so an
+assertion can fail for a compositor or message-path reason that is not an
+`Nt*` divergence at all. Two habits follow: read `winetest-gui-subset-msg.log`
+by SITE (cluster the failures by `<subtest>.c:NNNN`) before believing any
+single one, and check whether the same assertion fails on the ORACLE half — that
+half runs the same PE binaries over winex11.drv, so a divergence between the
+two halves is localized to the display seam by construction, and one that
+fails on BOTH is Wine's or the suite's, never the kernel's (Art. 6).
 
 ## The goal is PROGRESS toward every winetest passing, not a green pair today
 
@@ -77,6 +117,14 @@ not advice, and this workflow touches the areas they guard hardest. Read
 `docs/21-winetest-frontier.md` in full — §4 "Traps" exists to stop you losing
 a day, and the manifest header explains why a pair is parked.
 
+**docs/21 plans the CUI frontier only.** Its W-items are CUI pairs, and the
+GUI frontier has no equivalent document: for a GUI item the manifest block IS
+the plan, and §4's traps still apply because they are about measuring, not
+about which manifest. Do not invent a W-number for a GUI item; if the work
+turns out to deserve a written plan, say so in the report and let the user
+decide whether docs/21 grows a GUI half. For the GUI machine itself, read
+`docs/03` "GUI-5 winetest notes" — it is where that leg's policy lives.
+
 Also honour `CLAUDE.local.md` for the `make -j` flag on this machine.
 
 **One instance at a time.** Test legs bake disk images from the *live working
@@ -88,23 +136,32 @@ of these skills concurrently.
 
 ## Step 1 — Pick an item, or REFUSE
 
-List what is unparkable. An item is unparkable iff its manifest block ends
-with `# TODO: Implement` — that marker is the manifest's own statement that
-the pair is red for a *kernel* reason (category 1). Blocks without it are
-category 2: not reachable without reversing a recorded decision.
+List what is unparkable, **in both manifests**. An item is unparkable iff its
+block ends with `# TODO: Implement` — that marker is the manifest's own
+statement that the pair is red for a *kernel* reason (category 1). Blocks
+without it are category 2: not reachable without reversing a recorded
+decision.
 
 ```sh
-grep -A1 '^# TODO: Implement$' tests/winetest/manifest.txt \
-  | grep -E '^# [a-z0-9_.]+\.exe:' | sed 's/^# //'
+for m in tests/winetest/manifest.txt tests/winetest/manifest-gui.txt; do
+  echo "== $m"
+  grep -A1 '^# TODO: Implement$' "$m" \
+    | grep -E '^# [a-z0-9_.]+\.exe:' | sed 's/^# //'
+done
 ```
 
-**If that command prints nothing, STOP and refuse.** Say that the CUI
-winetest frontier has no unparkable item left, that every remaining
-commented-out pair is category 2 (name a couple with their deciding
-constraint), and that re-parking one of those needs a human decision to
-reverse the constraint, not an implementation. Do not invent work, do not
-widen the manifest, and do not pick a category-2 pair "because it looks
-fixable". Exit.
+**If BOTH print nothing, STOP and refuse.** Say that neither winetest frontier
+has an unparkable item left, that every remaining commented-out pair is
+category 2 (name a couple with their deciding constraint), and that re-parking
+one of those needs a human decision to reverse the constraint, not an
+implementation. Do not invent work, do not widen a manifest, and do not pick a
+category-2 pair "because it looks fixable". Exit.
+
+If only one manifest prints items, work that one and say so. The GUI list's
+`user32` blocks are UNMEASURED — they say so — so picking one means Step 2 is
+the whole first half of the job rather than a confirmation; that is expected,
+and writing the first real measurement into the block is itself a deliverable
+worth landing.
 
 Otherwise choose one, honouring `$ARGUMENTS` when given. Cross-reference
 docs/21's W-items for the planned approach and the article risks; prefer an
@@ -118,16 +175,33 @@ all past the stop. Its recorded count is a **lower bound**, and reading one
 as "nearly green" is how an hour-long item gets scheduled as a one-liner.
 docs/21 §4 records this trap because it was paid for.
 
-Temporarily un-comment the pair and measure it:
+Temporarily un-comment the pair — a parked pair is not in the active list, so
+neither leg's filter can select it — and measure it on ITS leg:
 
 ```sh
-tests/run/run.sh winetest <module>:<subtest>     # both legs
+tests/run/run.sh winetest     <module>:<subtest>   # CUI: both halves
+tests/run/run.sh winetest-gui <module>:<subtest>   # GUI: both halves
 ```
 
-Then read the serial log — `build/tests/wtest-subset-serial.log`, stripping
-ANSI escapes — and count failures per source line so you know the real
-clusters and their sizes. If the oracle leg is red, the pair cannot convict
-the kernel (Art. 6): re-park it with that finding and pick another item.
+Then read that leg's serial log and count failures per source line so you know
+the real clusters and their sizes:
+
+- CUI — `build/tests/wtest-subset-serial.log`, stripping ANSI escapes.
+- GUI — `build/tests/winetest-gui-subset-msg.log`, which is already the
+  assertion text (`tools/unscreen.py` replays it out of the console screen
+  diff; grepping the raw serial log finds it shredded into fragments). The
+  `[KTEST]` VERDICT still comes from `winetest-gui-subset-serial.log`.
+
+If the ORACLE half is red, the pair cannot convict the kernel (Art. 6):
+re-park it with that finding and pick another item. On the GUI frontier check
+this first and read it carefully — an oracle-red assertion there is Wine's or
+the suite's, and chasing it in `kernel/` is the trap that frontier has that
+the CUI one does not.
+
+**Put the pair back the way you found it before you go on.** A measurement run
+leaves the manifest edited; if you now decide to work something else, or the
+oracle refutes the item, restore the comment in the same breath — an
+accidentally-activated red pair fails the gate for everyone.
 
 Re-scope now if the measurement disagrees with the block. Say so plainly
 later rather than quietly working a different item.
@@ -177,19 +251,22 @@ Write the kernel change. While doing so:
 Then prove it, in this order, and do not proceed past a failure:
 
 ```sh
-make -j<N>                                  # per CLAUDE.local.md
-tests/run/run.sh proskrnl <name>            # the new pin, on the kernel
-tests/run/run.sh winetest <module>:<subtest># re-measure the pair
-make format                                 # REWRITES source — so, before the verdict
-make fulltest                               # THE verdict — every leg CI runs, ~3 min
+make -j<N>                                   # per CLAUDE.local.md
+tests/run/run.sh proskrnl <name>             # the new pin, on the kernel
+tests/run/run.sh winetest <module>:<subtest> # re-measure the pair — or
+tests/run/run.sh winetest-gui <module>:<subtest>   # ...its leg, if it is a GUI pair
+make format                                  # REWRITES source — so, before the verdict
+make fulltest                                # THE verdict — every leg CI runs, ~3 min
 ```
 
 The first three are ITERATION: a subset run is never a verdict. `make fulltest`
 (`tools/fulltest.sh`, docs/08) is — it runs the same 26 legs
 `.github/workflows/test.yml` runs, sandboxed one per leg and fanned out over
-this box: the unfiltered oracle and proskrnl legs, the whole winetest sweep,
-`make test`, the fuzzer, the FAT batteries, every CUI and GUI leg, the
-user32:msg trophy and the blocking-frontier check. It prints a PASS/FAIL table
+this box: the unfiltered oracle and proskrnl legs, the whole CUI winetest
+sweep, `make test`, the fuzzer, the FAT batteries, every CUI and GUI leg, and
+the `winetest-gui` leg — which is where an unfiltered GUI verdict comes from,
+including the `user32:msg` budget ratchet, and which is the floor of the
+suite's wall clock at ~2 minutes. It prints a PASS/FAIL table
 and exits non-zero if any leg is red; read the table, not the exit code alone.
 
 `format` runs *before* it, never after: it rewrites source in place, and a verdict
@@ -218,11 +295,21 @@ saying what would un-park it. Do not add a second standing exception here.
 lands on the four criteria at the top of this file; this step only decides
 whether the pair joins the active gate.
 
-- **Green on both legs** → un-comment the pair. It is now part of the gate.
+- **Green on both halves** → un-comment the pair, in the manifest it lives in.
+  It is now part of that leg's gate.
 - **Still red** → leave it commented out and **rewrite its triage block**
   with the numbers you just measured: total failures, the dominant clusters
   with counts and source lines, and what each one actually is. Keep
   `# TODO: Implement`. **Commit the kernel change anyway** — it met the bar.
+
+**Do not reach for a budget to activate a red pair.** The grammar lets any
+pair carry one, and exactly one does: `user32:msg`, whose remaining failures
+are named one by one, attributed to a family, and ratcheted down commit by
+commit — read its block to see the standard. A budget is a ceiling over
+divergences you have TRIAGED, never a way to make a count you have not
+explained stop failing the leg; that is what parking is for. If you believe a
+pair genuinely needs one, that is a decision to put to the user with the
+measured breakdown, not a number to write while landing an item.
 
 Never activate a red pair. The active list is a pass/fail signal, and a
 permanently-red entry teaches the next person to ignore the gate — the
@@ -250,7 +337,9 @@ is a false green of your own making.
 Update `docs/21` for the item: mark it DONE, or record what it turned out to
 be. **If the measurement contradicts something docs/21 asserts, fix the
 assertion and say why it was wrong** — that correction is often worth more
-than the code.
+than the code. (A GUI item has no W-number to mark; its record is the manifest
+block you just rewrote, plus a `docs/03` "GUI-5 winetest notes" line when the
+finding is about the leg or the GUI stack rather than about one pair.)
 
 Add the `docs/03-nt-deviations.md` note for any behaviour that deviates or
 that a future reader would otherwise have to re-derive, and update
@@ -282,7 +371,8 @@ negotiable:
    ordering is the only proof the test was green before the code existed.
 2. `<dept>: <behaviour>` — the kernel change plus its `docs/03` (and
    `docs/16`) notes.
-3. `tests/winetest+docs/21: <bookkeeping>` — the manifest and docs/21.
+3. `tests/winetest+docs/21: <bookkeeping>` — the manifest (whichever of the
+   two the pair lives in) and docs/21.
 
 No WIP or fixup commits. Squash and reorder locally first.
 
@@ -356,7 +446,11 @@ that would have enforced it.
 What skipping the wait costs, honestly: CI is a slower machine (two cores,
 TCG, virgin cache), so the failures it can see that fulltest cannot are the
 ones settled by machine SPEED rather than by semantics — which is why the
-user32:msg leg is advisory on PRs there (docs/03 "GUI-5 winetest notes").
+`msg` shard (the `winetest-gui` leg) is advisory on PRs there and blocking on
+main (docs/03 "GUI-5 winetest notes"). If your item IS on the GUI frontier,
+that advisory status is not cover: the leg you just changed is the one whose
+CI verdict you are choosing not to wait for, so quote your local
+`winetest-gui` numbers in the PR and watch main's run after the merge.
 Everything semantic, fulltest has already answered. CI still runs on `main`
 after the merge and remains the project's record; if a leg fulltest passed
 goes red there, that is a real finding — either a machine-speed divergence or
@@ -390,7 +484,7 @@ merge on red.
 belongs on any list here. If a leg wedges, it is new.)
 
 **Never merge on red when** the failing leg is one this diff is *about*
-(`proskrnl`, `winetest`, `boot`, `frontier`), when the failure names a file,
+(`proskrnl`, `winetest`, `winetest-gui`, `boot`, `frontier`), when the failure names a file,
 test or subsystem the diff touches, when it is a real assertion rather than a
 hang or an infrastructure error, or when you have suspicion but not one of the
 two proofs above. Handing back an unmerged PR with a clear question is a good
