@@ -1371,13 +1371,19 @@ winetest() {
 # oracle buys is the thing a --without-x wine could not give at any price: a
 # SECOND run of the same code, so a number has something to be compared with.
 #
-# Ratcheted like the kernel half, against its own file
-# (tests/winetest/msg-budget-oracle.txt) rather than demanded green: measured,
-# unmodified Wine does not answer this module with zero. It answers ONE, in
-# every run, and the one is msg.c:5730 succeeding inside a todo_wine block —
-# a stale tag in Wine's own suite, not a divergence of ours (the budget file
-# names it). A ceiling of one is what that fact looks like written down; it
-# only ever ratchets DOWN, and a Wine pin that fixes the tag is what moves it.
+# DEMANDED GREEN, not budgeted — the CUI oracle half's rule, and now this
+# one's: a budget is a ceiling over OUR divergences, and nothing here is ours.
+# Wine's own suite passing on unmodified Wine is the baseline the whole
+# differential gate rests on, so a failure here is a broken oracle or a broken
+# suite and either wants fixing rather than accommodating.
+#
+# It used to carry a ceiling of one (tests/winetest/msg-budget-oracle.txt,
+# retired with this): measured, the pinned tree answered msg with exactly one
+# failure, always msg.c:5730 reporting `marked "todo_wine" but succeeds` — a
+# tag that BOTH unmodified Wine and proskrnl satisfy, i.e. stale in the suite
+# rather than a divergence of ours. That is fixed where it lives, on the
+# fork's proskrnl-target branch (upstreamable, no shipped Wine code touched),
+# so the number this half accepts is zero.
 #
 # The count is read from winetest's own summary line rather than the exit
 # status, because a shell sees an exit code modulo 256 and a failure count
@@ -1388,23 +1394,14 @@ winetest() {
 # failure" — SINGULAR. A `failures\)` match therefore skipped the parent and
 # silently read a child's zero. The parent's line is the LAST one (it waits
 # on its children before printing), and its count is also its exit status.
-winetest_gui_oracle() {   # $1 = the user32_test.exe both halves run
-    local exe="$1"
-    local budgetfile="$ROOT/tests/winetest/msg-budget-oracle.txt"
-    local olog="$BUILD/wtests/user32_test.msg.oracle.log"
-    local rc=0 failures budget
-    # `|| true` for the reason the kernel half's verdict grep needs one: under
-    # `set -o pipefail` an absent or comment-only budget file fails the
-    # pipeline and `set -e` kills the leg BEFORE the message below can say so.
-    budget="$(grep -vE '^\s*(#|$)' "$budgetfile" | head -1 | tr -d '[:space:]' || true)"
-    if ! [[ "$budget" =~ ^[0-9]+$ ]]; then
-        echo "== winetest-gui-oracle: msg-budget-oracle.txt holds no number ==" >&2
-        return 2
-    fi
+winetest_gui_oracle() {   # $1 = the test exe, $2 = subtest, $3 = timeout seconds
+    local exe="$1" sub="$2" secs="${3:-}"
+    local olog="$BUILD/wtests/user32_test.$sub.oracle.log"
+    local rc=0 failures
     # A tree built before the GUI-5 test target has no user32_test.exe (the
     # stale-cache case the third_party cache's v5 bump exists for). Without
     # this the run produces no summary line and the branch below reports "the
-    # msg run never finished" — the --without-x hang's signature — for a file
+    # run never finished" — the --without-x hang's signature — for a file
     # that was simply not there.
     if [[ ! -f "$exe" ]]; then
         echo "== winetest-gui-oracle: FAIL (no $exe — the pinned tree's user32 test" \
@@ -1414,10 +1411,14 @@ winetest_gui_oracle() {   # $1 = the user32_test.exe both halves run
     mkdir -p "$BUILD/wtests"
     # A scratch cwd, like the CUI oracle half: msg.c writes nothing, but the
     # rule that an oracle never runs in $ROOT is the harness's, not the
-    # test's. The cap is a BACKSTOP against a wedged run eating the CI job,
-    # not a budget — the run takes minutes.
-    (cd "$BUILD/wtests" && timeout -s KILL "${WINETEST_GUI_ORACLE_TIMEOUT:-1800}" \
-        "$WINE" "$exe" msg) >"$olog" 2>&1 || rc=$?
+    # test's. The manifest's per-pair bound applies here as a BACKSTOP against
+    # a wedged run eating the CI job, not as a budget — host wine is far
+    # quicker than the TCG guest those numbers are sized for.
+    (cd "$BUILD/wtests" && timeout -s KILL "${WINETEST_GUI_ORACLE_TIMEOUT:-${secs:-1800}}" \
+        "$WINE" "$exe" "$sub") >"$olog" 2>&1 || rc=$?
+    # The count is read from winetest's own summary line rather than the exit
+    # status, because a shell sees an exit code modulo 256 and a failure count
+    # does not clip — but the two ARE cross-checked below.
     failures="$(grep -oE '[0-9]+ (failure|failures)\)' "$olog" | tail -1 | grep -oE '^[0-9]+' || true)"
     if [[ -z "$failures" ]]; then
         # No summary line at all: the module never finished. That is exactly
@@ -1425,32 +1426,29 @@ winetest_gui_oracle() {   # $1 = the user32_test.exe both halves run
         # test_SendMessage_other_thread on a window that was never created),
         # so it is named rather than folded into a count — a run that did not
         # run is not a measurement.
-        echo "== winetest-gui-oracle: FAIL (no winetest summary — the msg run never" \
+        echo "== winetest-gui-oracle: FAIL (no winetest summary — the $sub run never" \
              "finished, exit=$rc; see $olog) =="
         return 1
     fi
-    # The cross-check the comment above promises. Below 255 the exit status IS
-    # the count, so a disagreement means the runner misread one of the two and
-    # neither number may be graded — it is reported as a broken measurement
-    # rather than resolved in favour of whichever is smaller.
+    # The cross-check the header promises, and the reason it exists: this
+    # module spawns ~21 children, each printing its own "17 tests executed
+    # (… 0 failures)" summary, and the parent's line says "1 failure" —
+    # SINGULAR, so a `failures\)` match skipped the parent and silently read a
+    # child's zero. Below 255 the exit status IS the count, so a disagreement
+    # means the runner misread one of the two and neither may be graded.
     if (( rc < 255 && rc != failures )); then
         echo "== winetest-gui-oracle: FAIL (the run exited $rc but its summary line" \
              "says $failures — the runner cannot tell what the oracle answered;" \
              "see $olog) =="
         return 1
     fi
-    echo "[KTEST] winetest-gui-oracle user32:msg failures=$failures budget=$budget"
-    if (( failures > budget )); then
-        echo "== winetest-gui-oracle: FAIL ($failures failures against a budget of" \
-             "$budget on unmodified Wine; see $olog) =="
+    if (( failures != 0 )); then
+        echo "[KTEST] winetest-gui-oracle user32_test.exe:$sub FAIL (failures=$failures)"
+        echo "== winetest-gui-oracle: FAIL ($failures on UNMODIFIED Wine — the oracle is" \
+             "the spec half and is demanded green; see $olog) =="
         return 1
     fi
-    if (( failures < budget )); then
-        echo "== winetest-gui-oracle: PASS — and $failures < budget $budget:" \
-             "ratchet msg-budget-oracle.txt down =="
-    else
-        echo "== winetest-gui-oracle: PASS ($failures failures, at budget) =="
-    fi
+    echo "[KTEST] winetest-gui-oracle user32_test.exe:$sub PASS"
     return 0
 }
 
@@ -1472,35 +1470,24 @@ winetest_gui_oracle() {   # $1 = the user32_test.exe both halves run
 # reasoning moved into manifest-gui.txt beside the pair it is about): more
 # failures than the budget is a regression and fails the leg, fewer is a note
 # to ratchet the field down in the commit that earned it. 0 is the milestone's
-# end state. The ORACLE half keeps a file, msg-budget-oracle.txt — it is a
-# ceiling over a different machine (unmodified Wine on Xvfb) and belongs to
-# neither the pair nor this leg's kernel half.
+# end state. The ORACLE half is not budgeted at all: it runs the same active
+# list on unmodified Wine and is demanded green, because a budget is a ceiling
+# over OUR divergences and nothing on that side is ours.
 winetest_gui() {
     local manifest="$ROOT/tests/winetest/manifest-gui.txt"
     wtest_parse_manifest "$manifest" || return 2
     local testexe="$ROOT/third_party/wine/dlls/user32/tests/x86_64-windows/user32_test.exe"
 
-    # THE ORACLE HALF IS STILL ONE PAIR'S. It runs `user32_test.exe msg`
-    # against a ceiling of its own (msg-budget-oracle.txt), so activating a
-    # second pair in the manifest would give the kernel half a graded pair
-    # whose spec side never ran — a differential gate quietly down to one
-    # side. That refuses here rather than passing: generalizing it needs an
-    # oracle ceiling PER PAIR, which is a change to the grammar (the budget
-    # field is the kernel half's) and belongs to whoever activates the second
-    # pair.
-    if [[ ${#WTEST_KEYS[@]} != 1 || "${WTEST_KEYS[0]}" != "user32_test.exe:msg" ]]; then
-        echo "== winetest-gui: manifest-gui.txt activates ${WTEST_KEYS[*]}, and the ORACLE" \
-             "half runs user32_test.exe:msg alone — give the oracle half the list (and a" \
-             "per-pair ceiling) before activating another pair ==" >&2
-        return 2
-    fi
-
     # --- oracle half first (minutes), then the kernel half (an hour under
-    # TCG). Its verdict does not gate the kernel half: a red leg must not
+    # TCG). It runs THE MANIFEST'S ACTIVE LIST, the same pairs the kernel half
+    # sweeps, so activating a pair cannot leave a graded pair whose spec side
+    # never ran. Its verdict does not gate the kernel half: a red leg must not
     # hide the leg behind it, and the number the ratchet wants is measured
     # either way. Both are folded into the leg's exit status at the end.
-    local oracleFail=0
-    winetest_gui_oracle "$testexe" || oracleFail=1
+    local oracleFail=0 i
+    for ((i = 0; i < ${#WTEST_KEYS[@]}; i++)); do
+        winetest_gui_oracle "$testexe" "${WTEST_SUBS[i]}" "${WTEST_SECS[i]}" || oracleFail=1
+    done
 
     # The test image carries user32_test.exe and BOTH manifests; the leg name
     # picks manifest-gui.txt (user/smss/session.c SessionRun). It used to bake
@@ -1550,7 +1537,7 @@ winetest_gui() {
     # verdict line off serial (never the console, whose 80-column screen diff
     # mangles winetest's text), a full 32-bit exit status that is winetest's
     # failure count, and a crash exit failed by name whatever the budget says.
-    local fails=0 i
+    local fails=0
     for ((i = 0; i < ${#WTEST_KEYS[@]}; i++)); do
         wtest_grade winetest-gui "${WTEST_KEYS[i]}" "${WTEST_BUDGETS[i]}" "$log" ||
             fails=$((fails + 1))

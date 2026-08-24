@@ -27,13 +27,14 @@
 # and what is under it different — so that the kernel half's number has
 # something to be a number ABOUT.
 #
-# Each half is ratcheted against its OWN number, and the two are not
-# comparable: the kernel half's is the msg pair's BUDGET FIELD below, a
-# ceiling over proskrnl's divergences plus a machine-speed band;
-# msg-budget-oracle.txt is one over unmodified Wine running its own suite
-# (measured: 1, always msg.c:5730's stale todo_wine). Both only ever go DOWN,
-# and the kernel half's end state is 0. docs/03 "GUI-5 winetest notes" records
-# the whole policy.
+# ONLY THE KERNEL HALF IS BUDGETED. The budget field below is a ceiling over
+# proskrnl's divergences plus a machine-speed band; it only ever goes DOWN and
+# its end state is 0. The ORACLE half is demanded green, like the CUI leg's:
+# a budget is a ceiling over OUR divergences, and on unmodified Wine running
+# its own suite nothing is ours. It briefly had a ceiling of one
+# (msg-budget-oracle.txt, retired) for a stale todo_wine tag in msg.c that
+# both Wine and proskrnl satisfy; that is fixed in the fork's suite where it
+# lives. docs/03 "GUI-5 winetest notes" records the whole policy.
 #
 # The kernel half's ceiling used to live in a file of its own
 # (msg-budget.txt). It is a property of the PAIR, not of the leg that runs it,
@@ -47,7 +48,7 @@
 # ---------------------------------------------------------------------------
 
 # --- user32 (third_party/wine/dlls/user32/tests) ----------------------------
-# THE TROPHY, AND THE ONE BUDGETED PAIR IN EITHER MANIFEST. 17 is a CEILING,
+# THE TROPHY, AND THE ONE BUDGETED PAIR IN EITHER MANIFEST. 16 is a CEILING,
 # not the measured count, and deliberately so; only ever ratchet it DOWN, in
 # the same commit as the fix that earned it (G13). The leg fails on any count
 # above it, and on any CRASH exit regardless of the number.
@@ -76,6 +77,12 @@
 #   20  the process idle event is a GUI-process thing
 #   18  the forced desktop window no longer re-homes the process
 #   17  the two speed-dependent families cannot both be at maximum
+#   16  the ShowWindow(SW_SHOWMAXIMIZED) todo tag is retired in the fork's
+#       suite, so passing that sequence stops costing a failure. DERIVED, not
+#       measured: the term simply leaves the arithmetic below (an ok_sequence
+#       with todo=FALSE that MATCHES reports nothing, and both halves matched
+#       -- winetest only says "marked todo_wine but succeeds" when the whole
+#       sequence matched). The next measured run is what confirms it.
 #
 # The count has two parts.
 #
@@ -86,9 +93,11 @@
 #   explorer), five in test_WM_COPYDATA (a child process must create its
 #   window inside the test's own one-second FindWindow poll, and a process
 #   start on this stack costs more than that under TCG - they fail as a
-#   block, so they cost no headroom), and two todo_wine tags that are stale
+#   block, so they cost no headroom), and ONE todo_wine tag that is stale
 #   here because proskrnl passes what Wine fails (winetest counts a success
-#   inside a todo block as a failure, so being RIGHT costs two).
+#   inside a todo block as a failure, so being RIGHT costs one). It was two;
+#   the ShowWindow one is retired in the fork's suite, where a tag that BOTH
+#   unmodified Wine and proskrnl satisfy belongs.
 #
 #   VOLATILE, 0..7: test_PeekMessage3 sets a 100 ms timer, never kills it,
 #   and then asserts seven times that the queue is empty - true where the
@@ -110,20 +119,20 @@
 # A machine slow enough to fail all seven timer assertions is far too slow
 # to win that 500 ms race, so 7 and that 1 cannot co-occur. The bound is
 #
-#   2 (explorerless fixture) + 2 (interthread) + 1 (todo, ShowWindow)
-#     + 5 (WM_COPYDATA) + 7 (test_PeekMessage3 worst case)
+#   2 (explorerless fixture) + 2 (interthread) + 0 (todo, ShowWindow: the
+#     tag is gone) + 5 (WM_COPYDATA) + 7 (test_PeekMessage3 worst case)
 #     + 0 (msg.c:18349 cannot also fail)
-#   = 17
+#   = 16
 #
 # and a run above it is a real regression rather than a slower runner.
 #
 # The ratchet moves only when a STABLE failure is fixed: a run measuring 12
 # rather than 15 has not earned a lower budget, it just got lucky with the
 # timer. Ratchet from the bound, never from the measurement. The next real
-# drop is the interthread pair (-2, to 15); collapsing the volatile range
+# drop is the interthread pair (-2, to 14); collapsing the volatile range
 # itself needs deterministic guest time (QEMU -icount), which would slow
 # every leg and is not worth it for this alone.
-user32_test.exe:msg:17:3000
+user32_test.exe:msg:16:3000
 
 # --- the rest of user32, ALL PARKED AND NONE MEASURED -----------------------
 # Every other subtest the pinned tree's user32 test module has. They are here
