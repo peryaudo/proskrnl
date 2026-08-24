@@ -17,6 +17,7 @@
 #include "kernel/ke/ke.h"
 #include "kernel/init/verify.h"
 #include "kernel/lib/string.h"
+#include "arch/x86_64/lapic.h"
 
 int kmt_failures;
 int kmt_todo;
@@ -460,6 +461,61 @@ static void test_timers(void)
     ok(KeCancelTimer(&periodic) == TRUE, "periodic timer was not pending after expiries");
 }
 
+/* --- the query clock spans a late tick (docs/03 "Sub-tick system time") --- */
+
+/* A loaded host delivers the LAPIC tick whole milliseconds late while the
+ * TSC keeps counting. Holding the dispatcher lock IS that window, exactly:
+ * interrupts off, no tick can land, real time passes. The query clock must
+ * keep moving through it — monotonically, and past the one-tick mark a
+ * one-tick interpolation clamp froze it at — and the catch-up tick that
+ * lands on release must not step it back. This is the deterministic
+ * conviction of the freeze kernel32:time's time.c:843 flaked on in CI
+ * (every query in a late-tick window answered the same saturated value, and
+ * the tick after it published the whole catch-up as one >= 1 ms step);
+ * sem_ps/precise_time.c pins the same property at the boundary but cannot
+ * hold the tick off. */
+static void test_query_time_spans_late_ticks(void)
+{
+    if (KiTscPerMillisecond == 0)
+    {
+        ok(1, "no calibrated TSC; nothing to interpolate");
+        return;
+    }
+    uint64_t flags = KiAcquireDispatcherLock();
+    uint64_t tscStart = KiReadTimestampCounter();
+    ULONGLONG start = KeQueryInterruptTime();
+    ULONGLONG previous = start;
+    int backwards = 0;
+    /* Three tick periods with interrupts off: a real 3 ms late-tick window. */
+    while (KiReadTimestampCounter() - tscStart < 3 * KiTscPerMillisecond)
+    {
+        ULONGLONG now = KeQueryInterruptTime();
+        if (now < previous)
+        {
+            backwards++;
+        }
+        previous = now;
+    }
+    KiReleaseDispatcherLock(flags);
+    ok(backwards == 0, "query clock stepped back %d times inside the window", backwards);
+    ok(previous - start >= 2 * KI_100NS_PER_TICK,
+       "query clock advanced only %llu (100 ns units) across a 3 ms tickless window",
+       (unsigned long long)(previous - start));
+    /* And no further than real time: the interpolation must ride the window,
+     * not run ahead of it (the docs/03 divergence bound is 40 ms and the 3 ms
+     * window must come nowhere near it — 10 ticks is generous slack for the
+     * spin's own overshoot). */
+    ok(previous - start < 10 * KI_100NS_PER_TICK,
+       "query clock advanced %llu (100 ns units) across a 3 ms tickless window",
+       (unsigned long long)(previous - start));
+    /* The coalesced tick lands here with its catch-up (KiTicksElapsed);
+     * continuity means it must not step the clock back. */
+    sleep_ms(2);
+    ULONGLONG after = KeQueryInterruptTime();
+    ok(after >= previous, "catch-up tick stepped the clock back (%llu -> %llu)",
+       (unsigned long long)previous, (unsigned long long)after);
+}
+
 /* --- priority scheduling: strict highest-first ----------------------------- */
 
 static int prio_order[3];
@@ -625,6 +681,7 @@ int kmt_run_m2(void)
     KMT_RUN(test_timeouts);
     KMT_RUN(test_signal_beats_timeout);
     KMT_RUN(test_timers);
+    KMT_RUN(test_query_time_spans_late_ticks);
     KMT_RUN(test_priority);
     KMT_RUN(test_deadlock_walk);
     return kmt_failures;
