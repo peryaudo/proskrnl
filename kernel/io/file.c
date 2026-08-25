@@ -860,7 +860,13 @@ static NTSTATUS IopCreateFile(PHANDLE handleOut, ACCESS_MASK desiredAccess,
         goto out;
     }
 
-    status = ObpCreateHandle(file, granted, attributes->Attributes, handleOut);
+    /* The handle's mask is the FILE_OBJECT's, not the ladder's local: a
+     * device's Create may widen what it granted beyond what was asked —
+     * condrv's Server open adds the data access its request pump needs
+     * (drivers/condrv.c; kernelbase opens that handle properties-only
+     * because wineserver's pump is a server call, not file I/O) — the same
+     * way the overwrite dispositions already widened `granted` above. */
+    status = ObpCreateHandle(file, file->grantedAccess, attributes->Attributes, handleOut);
     if (!NT_SUCCESS(status))
     {
         /* The comment here used to say "close/cleanup run via the type

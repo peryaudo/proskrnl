@@ -547,7 +547,15 @@ What the M9 bring-up pinned, deviated on, or left unbuilt:
     console never hits this because smss holds its Reference forever;
   - a serial-wire `^C` (HACK-004) routes to the console whose conhost is
     doing the tty read (the reading thread's process names it); a `^C`
-    with no such conhost is dropped loudly.
+    with no such conhost is dropped loudly;
+  - the Server open's granted access implicitly includes
+    `FILE_READ_DATA | FILE_WRITE_DATA`: the request pump is
+    `NtReadFile`/`NtWriteFile` here (the fork transport,
+    `drivers/condrvproto.h`) where wineserver serves a
+    `get_next_console_request` server call with no file-access dimension —
+    so kernelbase opens the handle properties-only
+    (`create_console_server`), and the data access the pump needs is the
+    device's to grant.
 - **The console transport is the COM1 serial wire, both directions**
   (HACK-004, docs/10): conhost's tty is `\Device\Serial0`, RX polled — see
   the ledger entry for scope and retirement.
