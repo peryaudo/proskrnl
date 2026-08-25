@@ -19,8 +19,11 @@
  * (Art. 3): a readied thread runs only once the running one parks. So the
  * window the defect lives in is not a lottery — it is reachable by
  * construction, and this test drives conhost's side itself over the real
- * \Device\ConDrv\Server transport (the kmt suites run before smss starts
- * conhost, so the single server slot is free). The abort is the same engine
+ * \Device\ConDrv\Server transport, on a console of its own minting (M11:
+ * every Server open mints one; the fixture walks the stock open sequence —
+ * Server, then the console via a relative "Reference", then a relative
+ * "Connection" that binds the System process for the Input opens, unbound
+ * again at teardown). The abort is the same engine
  * KiAbortThreadWait uses (KiUnwaitThreadWithStatus, Art. 11: one authority),
  * so the client sees exactly the status a foreign TerminateProcess produces.
  *
@@ -41,27 +44,75 @@
 #include "abi/ntioapi.h"
 #include "abi/ntcondrv.h"
 
-static void init_attr(OBJECT_ATTRIBUTES *attr, UNICODE_STRING *name, const WCHAR *path)
+static void init_attr(OBJECT_ATTRIBUTES *attr, UNICODE_STRING *name, HANDLE root, const WCHAR *path)
 {
     RtlInitUnicodeString(name, path);
     attr->Length = sizeof(*attr);
-    attr->RootDirectory = 0;
+    attr->RootDirectory = root;
     attr->ObjectName = name;
     attr->Attributes = OBJ_CASE_INSENSITIVE;
     attr->SecurityDescriptor = 0;
     attr->SecurityQualityOfService = 0;
 }
 
-static NTSTATUS condrv_open(const WCHAR *path, HANDLE *handleOut)
+static NTSTATUS condrv_open(HANDLE root, const WCHAR *path, HANDLE *handleOut)
 {
     UNICODE_STRING name;
     OBJECT_ATTRIBUTES attr;
     IO_STATUS_BLOCK iosb;
 
-    init_attr(&attr, &name, path);
+    init_attr(&attr, &name, root, path);
     return NtCreateFile(handleOut, FILE_GENERIC_READ | FILE_GENERIC_WRITE, &attr, &iosb, 0,
                         FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN,
                         FILE_SYNCHRONOUS_IO_NONALERT, 0, 0);
+}
+
+/* The stock open ladder onto a console of this test's own minting: server,
+ * console (mint), connection (binds the System process — what lets the
+ * Input open through the caller-bound gate), input. Torn down in reverse;
+ * closing the connection is what unbinds (drivers/condrv.c). */
+typedef struct CONDRV_FIXTURE
+{
+    HANDLE server;
+    HANDLE console;
+    HANDLE connection;
+    HANDLE input;
+} CONDRV_FIXTURE;
+
+static int condrv_fixture_open(CONDRV_FIXTURE *fixture)
+{
+    NTSTATUS status;
+    fixture->server = fixture->console = fixture->connection = fixture->input = 0;
+    status = condrv_open(0, WSTR("\\Device\\ConDrv\\Server"), &fixture->server);
+    ok(status == STATUS_SUCCESS, "open server: %#x", (unsigned)status);
+    if (status != STATUS_SUCCESS)
+        return 0;
+    status = condrv_open(fixture->server, WSTR("Reference"), &fixture->console);
+    ok(status == STATUS_SUCCESS, "mint console: %#x", (unsigned)status);
+    if (status == STATUS_SUCCESS)
+        status = condrv_open(fixture->console, WSTR("Connection"), &fixture->connection);
+    ok(status == STATUS_SUCCESS, "bind connection: %#x", (unsigned)status);
+    if (status == STATUS_SUCCESS)
+        status = condrv_open(0, WSTR("\\Device\\ConDrv\\Input"), &fixture->input);
+    ok(status == STATUS_SUCCESS, "open input: %#x", (unsigned)status);
+    if (status != STATUS_SUCCESS)
+    {
+        if (fixture->connection)
+            NtClose(fixture->connection);
+        if (fixture->console)
+            NtClose(fixture->console);
+        NtClose(fixture->server);
+        return 0;
+    }
+    return 1;
+}
+
+static void condrv_fixture_close(CONDRV_FIXTURE *fixture)
+{
+    NtClose(fixture->input);
+    NtClose(fixture->connection); /* unbinds the System process */
+    NtClose(fixture->console);
+    NtClose(fixture->server); /* CondrvServerGone for this console */
 }
 
 /* --- the client half: one blocking read verb, parked in the driver -------- */
@@ -155,19 +206,12 @@ static void join_and_delete(PKTHREAD thread)
 
 static void test_condrv_unwind_after_completion(void)
 {
-    HANDLE server = 0;
-    HANDLE input = 0;
-    NTSTATUS status = condrv_open(WSTR("\\Device\\ConDrv\\Server"), &server);
-    ok(status == STATUS_SUCCESS, "open server: %#x", (unsigned)status);
-    if (status != STATUS_SUCCESS)
+    CONDRV_FIXTURE fixture;
+    NTSTATUS status;
+    if (!condrv_fixture_open(&fixture))
         return;
-    status = condrv_open(WSTR("\\Device\\ConDrv\\Input"), &input);
-    ok(status == STATUS_SUCCESS, "open input: %#x", (unsigned)status);
-    if (status != STATUS_SUCCESS)
-    {
-        NtClose(server);
-        return;
-    }
+    HANDLE server = fixture.server;
+    HANDLE input = fixture.input;
 
     CONDRV_CLIENT client = {.handle = input, .resumed = 0, .status = STATUS_SUCCESS};
     PKTHREAD worker = KiCreateThread(8, condrv_client_thread, &client);
@@ -220,8 +264,7 @@ static void test_condrv_unwind_after_completion(void)
 
     /* Give the console back: closing the server file runs CondrvServerGone,
      * so conhost can take the one server slot when smss starts it. */
-    NtClose(input);
-    NtClose(server);
+    condrv_fixture_close(&fixture);
 }
 
 /* --- the delivered state: aborted while conhost owns it as `current` ------ */
@@ -240,19 +283,12 @@ static void condrv_client_nonread_thread(void *context)
 
 static void test_condrv_unwind_while_delivered(void)
 {
-    HANDLE server = 0;
-    HANDLE input = 0;
-    NTSTATUS status = condrv_open(WSTR("\\Device\\ConDrv\\Server"), &server);
-    ok(status == STATUS_SUCCESS, "open server: %#x", (unsigned)status);
-    if (status != STATUS_SUCCESS)
+    CONDRV_FIXTURE fixture;
+    NTSTATUS status;
+    if (!condrv_fixture_open(&fixture))
         return;
-    status = condrv_open(WSTR("\\Device\\ConDrv\\Input"), &input);
-    ok(status == STATUS_SUCCESS, "open input: %#x", (unsigned)status);
-    if (status != STATUS_SUCCESS)
-    {
-        NtClose(server);
-        return;
-    }
+    HANDLE server = fixture.server;
+    HANDLE input = fixture.input;
 
     CONDRV_CLIENT client = {.handle = input, .resumed = 0, .status = STATUS_SUCCESS};
     PKTHREAD worker = KiCreateThread(8, condrv_client_nonread_thread, &client);
@@ -285,27 +321,19 @@ static void test_condrv_unwind_while_delivered(void)
     join_and_delete(second);
     ok(again.status == STATUS_SUCCESS, "second client saw %#x", (unsigned)again.status);
 
-    NtClose(input);
-    NtClose(server);
+    condrv_fixture_close(&fixture);
 }
 
 /* --- the queued state: aborted before conhost ever fetched it ------------- */
 
 static void test_condrv_unwind_while_queued(void)
 {
-    HANDLE server = 0;
-    HANDLE input = 0;
-    NTSTATUS status = condrv_open(WSTR("\\Device\\ConDrv\\Server"), &server);
-    ok(status == STATUS_SUCCESS, "open server: %#x", (unsigned)status);
-    if (status != STATUS_SUCCESS)
+    CONDRV_FIXTURE fixture;
+    NTSTATUS status;
+    if (!condrv_fixture_open(&fixture))
         return;
-    status = condrv_open(WSTR("\\Device\\ConDrv\\Input"), &input);
-    ok(status == STATUS_SUCCESS, "open input: %#x", (unsigned)status);
-    if (status != STATUS_SUCCESS)
-    {
-        NtClose(server);
-        return;
-    }
+    HANDLE server = fixture.server;
+    HANDLE input = fixture.input;
 
     CONDRV_CLIENT client = {.handle = input, .resumed = 0, .status = STATUS_SUCCESS};
     PKTHREAD worker = KiCreateThread(8, condrv_client_nonread_thread, &client);
@@ -331,8 +359,7 @@ static void test_condrv_unwind_while_queued(void)
     status = NtReadFile(server, 0, 0, 0, &iosb, buffer, (ULONG)sizeof(buffer), 0, 0);
     ok(status == STATUS_PENDING, "queue not empty after the unwind: %#x", (unsigned)status);
 
-    NtClose(input);
-    NtClose(server);
+    condrv_fixture_close(&fixture);
 }
 
 int kmt_run_condrv(void)

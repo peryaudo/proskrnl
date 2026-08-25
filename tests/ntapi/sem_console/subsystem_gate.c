@@ -95,36 +95,24 @@ START_TEST(subsystem_gate)
     /* --- a CUI child of a console-less parent allocates its own console --- */
     build_cmdline(cmdline, self, W("--cui-child"));
     ok(run_child(cmdline, 0, &code), "cui child ran");
-    todo_proskrnl
-    {
-        ok(code == (CHILD_BASE | SG_CUI_ALL), "cui child observed %04lx, expected %04x",
-           (unsigned long)code, CHILD_BASE | SG_CUI_ALL);
-    }
+    ok(code == (CHILD_BASE | SG_CUI_ALL), "cui child observed %04lx, expected %04x",
+       (unsigned long)code, CHILD_BASE | SG_CUI_ALL);
 
     /* --- a GUI child of a console-less parent gets NO console at all ------ */
     probe_cmdline(cmdline, self);
     ok(run_child(cmdline, 0, &code), "gui probe ran");
-    todo_proskrnl
-    {
-        ok(code == (CHILD_BASE | SG_GUI_NULL), "gui probe observed %04lx, expected %04x",
-           (unsigned long)code, CHILD_BASE | SG_GUI_NULL);
-    }
+    ok(code == (CHILD_BASE | SG_GUI_NULL), "gui probe observed %04lx, expected %04x",
+       (unsigned long)code, CHILD_BASE | SG_GUI_NULL);
 
     /* --- a GUI child of a console-ATTACHED parent STILL gets no console ---
      * (the create-time half of the gate: ntdll create_startup_info withholds
      * the console from a non-CUI child). */
     alloced = AllocConsole();
-    todo_proskrnl
-    {
-        ok(alloced, "AllocConsole -> %lu", (unsigned long)GetLastError());
-    }
+    ok(alloced, "AllocConsole -> %lu", (unsigned long)GetLastError());
     probe_cmdline(cmdline, self);
     ok(run_child(cmdline, 0, &code), "bound gui probe ran");
-    todo_proskrnl
-    {
-        ok(code == (CHILD_BASE | SG_GUI_NULL), "bound gui probe observed %04lx, expected %04x",
-           (unsigned long)code, CHILD_BASE | SG_GUI_NULL);
-    }
+    ok(code == (CHILD_BASE | SG_GUI_NULL), "bound gui probe observed %04lx, expected %04x",
+       (unsigned long)code, CHILD_BASE | SG_GUI_NULL);
 
     FreeConsole();
 }

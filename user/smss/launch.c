@@ -1,34 +1,34 @@
 /* user/smss/launch.c — process launching over the raw NtCreateUserProcess
  * boundary: the kernel's old PsRunUserImage duties, done from ring 3.
  *
- * Children created without a console or an explicit command line get NO
- * parameter block — the kernel synthesizes the default furniture
- * (kernel/ps/peb.c PspBuildDefaultParams), exactly as it did for its own
- * launches. Console children need an explicit block (the create-path
- * console/std fixups only run on caller-supplied parameters —
- * kernel/ps/process.c), so one is built from smss's OWN furniture (which
- * IS the kernel default: smss is a params-less kernel launch) plus the
- * ConDrv handles below.
+ * Every child gets an explicit parameter block built from smss's own
+ * furniture (which IS the kernel default: smss is a params-less kernel
+ * launch), because the console field always carries a value now — the
+ * boot console for console children, CONSOLE_HANDLE_SHELL_NO_WINDOW for
+ * scripted console-less ones (SmssSpawn says why).
  *
- * The console handles are opened from \Device\ConDrv by name — Connection
- * for the child's ConsoleHandle, Input for hStdInput, one Output shared by
- * hStdOutput/hStdError — the exact device paths the pinned kernelbase opens
- * for itself (third_party/wine dlls/kernelbase/console.c
- * create_console_connection / init_console_std_handles:
- * \Device\ConDrv\{Connection,Input,Output}) and
- * the same one-open-two-std shape the kernel's create-time seeding used
- * to build. smss itself never touches the console with them (it prints via
- * NtDisplayString), so it stays OFF the console: its EPROCESS is never
- * console-attached and the Ctrl+C fanout can never select the session
- * manager (kernel/ps/process.c PsPropagateConsoleCtrlEvent).
- */
+ * M11: the boot console is minted through the STOCK alloc_console open
+ * sequence (third_party/wine dlls/kernelbase/console.c 404-499): a
+ * \Device\ConDrv\Server open, "Reference" relative to it minting the
+ * console, conhost.exe spawned with `--server 0x%x` through
+ * value-preserving handle-list inheritance, and the server handle closed
+ * once the child owns it. smss keeps ONLY the console (Reference) handle:
+ * it is what console children are seeded with, and holding it forever is
+ * what keeps the boot console — and its conhost — alive (drivers/condrv.c
+ * CondrvClientGone). smss itself never binds (no Connection open), so its
+ * EPROCESS stays off every console and the Ctrl+C fanout can never select
+ * the session manager (kernel/ps/process.c PsPropagateConsoleCtrlEvent).
+ *
+ * Children are seeded the PSEUDOCONSOLE-attach way (dlls/kernelbase/
+ * process.c 606-622: ConsoleHandle = the console, ConsoleFlags |= 2, no
+ * std handles): the child's own init_console (dlls/kernelbase/console.c
+ * 2400-2407) opens its Connection — which binds it — and mints its std
+ * handles from the ConsoleFlags & 2 request. */
 #include "user/smss/smss.h"
 
 #include "abi/ntcondrv.h"
 
-static HANDLE SmssConsoleConnection;
-static HANDLE SmssConsoleInput;
-static HANDLE SmssConsoleOutput;
+static HANDLE SmssConsoleHandle; /* the boot console (a Reference open) */
 static int SmssConsoleReady;
 
 int SmssConsoleAvailable(void)
@@ -44,10 +44,10 @@ NTSTATUS SmssSpawn(const WCHAR *ntPath, const WCHAR *cmdline, int console, HANDL
     while (ntPath[chars] != 0)
         chars++;
 
-    /* Explicit parameters only when needed; RtlDestroyProcessParameters
-     * frees the block after the create captured it. */
+    /* Every child gets an explicit parameter block now (the console field
+     * always carries a value); RtlDestroyProcessParameters frees it after
+     * the create captured it. */
     RTL_USER_PROCESS_PARAMETERS *params = 0;
-    if (console || cmdline != 0)
     {
         /* The DOS spelling: the NT path minus \??\ (the PEB builder's rule,
          * kernel/ps/process.c NtCreateUserProcess). */
@@ -75,13 +75,29 @@ NTSTATUS SmssSpawn(const WCHAR *ntPath, const WCHAR *cmdline, int console, HANDL
             return status;
         if (console)
         {
-            /* The create-path fixups re-duplicate these smss handles into
-             * the child's table and write the child values back. */
-            params->ConsoleHandle = SmssConsoleConnection;
-            params->hStdInput = SmssConsoleInput;
-            params->hStdOutput = SmssConsoleOutput;
-            params->hStdError = SmssConsoleOutput;
+            /* The pseudoconsole-attach seeding (header comment): the
+             * create-path fixup re-duplicates the console handle into the
+             * child; the child binds and builds its own std handles. */
+            params->ConsoleHandle = SmssConsoleHandle;
+            params->ConsoleFlags = 2;
         }
+        else
+        {
+            /* A console-less scripted child is seeded the way the ORACLE's
+             * runner-launched processes arrive: ntdll's unix side hands a
+             * redirected, non-tty process CONSOLE_HANDLE_SHELL_NO_WINDOW
+             * (dlls/ntdll/unix/env.c 1369-1370), which init_console leaves
+             * alone — so a CUI child of a console-less chain does NOT
+             * AllocConsole itself a conhost. Without this, both runners
+             * diverge: the sem_ps job pins count the conhost.exe an
+             * ALLOC-sentinel child would spawn into the job. A child that
+             * SHOULD alloc (sem_console/subsystem_gate) FreeConsoles first,
+             * which nulls the sentinel — the oracle's own arrangement. */
+            params->ConsoleHandle = CONSOLE_HANDLE_SHELL_NO_WINDOW;
+        }
+        params->hStdInput = 0;
+        params->hStdOutput = 0;
+        params->hStdError = 0;
     }
 
     struct
@@ -190,21 +206,20 @@ void SmssStartWineServer(void)
         SmssPrintf("[KTEST] gui3 server FAIL (create=%x)\n", SMSS_HEX(status));
 }
 
-/* `attributes` carries OBJ_INHERIT for the two std opens: NT console std
- * handles are born inheritable, and the create-path std fixup copies the
- * SOURCE handle's attributes into the child (ObpDuplicateIntoTable with
- * sameAttributes) — so a console child's own std handles stay
- * inherit-marked and its pipeline children receive them through cmd's
- * inherit-all copy at the same values (sem_ps/inherit semantics). The
- * Connection open stays uninheritable, like the old kernel seeding. */
-static NTSTATUS SmssOpenConDrv(const WCHAR *ntPath, ULONG attributes, HANDLE *handleOut)
+/* One \Device\ConDrv (or \Device\Serial0) open, absolute or relative to
+ * `root`, with the exact access shape kernelbase's console opens carry.
+ * `attributes` carries OBJ_INHERIT where a handle must survive into a
+ * child's table at its value (the server handle `--server 0x%x` names;
+ * the tty pair the headless conhost reads its std handles from). */
+static NTSTATUS SmssOpenConDrv(HANDLE root, const WCHAR *ntPath, ULONG attributes,
+                               HANDLE *handleOut)
 {
     UNICODE_STRING name;
     OBJECT_ATTRIBUTES attr;
     IO_STATUS_BLOCK iosb;
     SmssInitUnicodeString(&name, ntPath);
     attr.Length = sizeof(attr);
-    attr.RootDirectory = 0;
+    attr.RootDirectory = root;
     attr.ObjectName = &name;
     attr.Attributes = OBJ_CASE_INSENSITIVE | attributes;
     attr.SecurityDescriptor = 0;
@@ -217,26 +232,87 @@ static NTSTATUS SmssOpenConDrv(const WCHAR *ntPath, ULONG attributes, HANDLE *ha
                         FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, 0, 0);
 }
 
-/* Has a console server attached? A forwarded verb answers
- * STATUS_INVALID_DEVICE_STATE fast while there is no conhost (drivers/
- * condrv.c CondrvForward) and round-trips once one is pumping. */
-static int SmssConsoleServerAttached(void)
+/* Spawn conhost with the server handle in a PS_ATTRIBUTE_HANDLE_LIST under
+ * PROCESS_CREATE_FLAGS_INHERIT_HANDLES — the alloc_console spawn shape
+ * (dlls/kernelbase/console.c 469-476). The listed copy preserves handle
+ * VALUES (sem_ps/inherit.c), which is what makes the `--server 0x%x` text
+ * valid in the child. The tty pair rides the std-handle fields (values
+ * preserved the same way). */
+static NTSTATUS SmssSpawnConhost(const WCHAR *cmdline, HANDLE serverHandle, HANDLE ttyIn,
+                                 HANDLE ttyOut, HANDLE *processOut, HANDLE *threadOut)
 {
-    IO_STATUS_BLOCK iosb;
-    ULONG mode = 0;
-    NTSTATUS status = NtDeviceIoControlFile(SmssConsoleInput, 0, 0, 0, &iosb, IOCTL_CONDRV_GET_MODE,
-                                            0, 0, &mode, sizeof(mode));
-    return status == STATUS_SUCCESS;
+    static const WCHAR path[] = WSTR("\\??\\C:\\windows\\system32\\conhost.exe");
+    static const WCHAR image[] = WSTR("C:\\windows\\system32\\conhost.exe");
+    USHORT chars = 0;
+    while (path[chars] != 0)
+        chars++;
+
+    RTL_USER_PROCESS_PARAMETERS *params = 0;
+    UNICODE_STRING imageString, cmd;
+    SmssInitUnicodeString(&imageString, image);
+    SmssInitUnicodeString(&cmd, cmdline);
+    NTSTATUS status = RtlCreateProcessParametersEx(
+        &params, &imageString, &SmssOwnParams->DllPath, &SmssOwnParams->CurrentDirectory.DosPath,
+        &cmd, SmssOwnParams->Environment, &imageString, 0, 0, 0, PROCESS_PARAMS_FLAG_NORMALIZED);
+    if (status != STATUS_SUCCESS)
+        return status;
+    params->hStdInput = ttyIn;
+    params->hStdOutput = ttyOut;
+    params->hStdError = ttyOut;
+
+    struct
+    {
+        SIZE_T totalLength;
+        PS_ATTRIBUTE attributes[3];
+    } attrList;
+    PS_CREATE_INFO createInfo;
+    CLIENT_ID clientId;
+    clientId.UniqueProcess = 0;
+    clientId.UniqueThread = 0;
+    HANDLE handleList[1] = {serverHandle};
+
+    attrList.totalLength = sizeof(attrList);
+    attrList.attributes[0].Attribute = PS_ATTRIBUTE_IMAGE_NAME;
+    attrList.attributes[0].Size = (SIZE_T)chars * sizeof(WCHAR);
+    attrList.attributes[0].ValuePtr = (void *)path;
+    attrList.attributes[0].ReturnLength = 0;
+    attrList.attributes[1].Attribute = PS_ATTRIBUTE_CLIENT_ID;
+    attrList.attributes[1].Size = sizeof(clientId);
+    attrList.attributes[1].ValuePtr = &clientId;
+    attrList.attributes[1].ReturnLength = 0;
+    attrList.attributes[2].Attribute = PS_ATTRIBUTE_HANDLE_LIST;
+    attrList.attributes[2].Size = sizeof(handleList);
+    attrList.attributes[2].ValuePtr = handleList;
+    attrList.attributes[2].ReturnLength = 0;
+
+    for (unsigned i = 0; i < sizeof(createInfo); i++)
+        ((unsigned char *)&createInfo)[i] = 0;
+    createInfo.Size = sizeof(createInfo);
+
+    HANDLE process = 0, thread = 0;
+    status = NtCreateUserProcess(&process, &thread, PROCESS_ALL_ACCESS, THREAD_ALL_ACCESS, 0, 0,
+                                 PROCESS_CREATE_FLAGS_INHERIT_HANDLES, 0, params, &createInfo,
+                                 (PS_ATTRIBUTE_LIST *)&attrList);
+    RtlDestroyProcessParameters(params);
+    if (status == STATUS_SUCCESS &&
+        (createInfo.State != PsCreateSuccess || clientId.UniqueProcess == 0))
+        status = STATUS_UNSUCCESSFUL;
+    if (status != STATUS_SUCCESS)
+        return status;
+    *processOut = process;
+    *threadOut = thread;
+    return STATUS_SUCCESS;
 }
 
-/* Start the M9 console server: conhost, pumping the kernel ConDrv transport
- * with the COM1 serial tty behind it (HACK-004). Fire-and-forget — conhost
- * outlives every console client.
+/* Start the boot console: mint it through the stock open sequence (header
+ * comment) and hand it to a conhost of our own spawning. Fire-and-forget —
+ * this conhost outlives every console client because smss holds the
+ * console handle forever.
  *
  * No probe: the PRODUCT image carries conhost.exe on every boot, so "is it
  * there" decides nothing, and skipping silently on its absence would turn a
  * broken bake into a boot with no console rather than into a failure anyone
- * reads. SmssSpawn says so out loud instead.
+ * reads. SmssSpawnConhost says so out loud instead.
  *
  * A hermetic kernel fixture carries no conhost and no console clients; it says
  * so by NAMING a fixture leg, from which the kernel derives `Userland`
@@ -244,47 +320,91 @@ static int SmssConsoleServerAttached(void)
  * that never had the file apart from a product bake that lost it. */
 void SmssStartConhost(void)
 {
-    static const WCHAR path[] = WSTR("\\??\\C:\\windows\\system32\\conhost.exe");
     if (!SmssHasUserland())
     {
         SmssSay("smss: no Windows userland on this boot; conhost skipped\n");
         return;
     }
+
+    /* Server, then the console minted on it (create_console_server /
+     * create_console_reference). */
+    HANDLE server = 0;
+    NTSTATUS status = SmssOpenConDrv(0, WSTR("\\Device\\ConDrv\\Server"), OBJ_INHERIT, &server);
+    if (status == STATUS_SUCCESS)
+        status = SmssOpenConDrv(server, WSTR("Reference"), 0, &SmssConsoleHandle);
+    if (status != STATUS_SUCCESS)
+    {
+        SmssPrintf("[KTEST] conhost FAIL (console mint=%x)\n", SMSS_HEX(status));
+        return;
+    }
+
+    /* The mode decision stays smss's while a boot has one console: a
+     * desktop boot that did not ask for the serial console gets the
+     * windowed conhost (SmssConsoleWantsWindow); everything scripted gets
+     * the serial tty (HACK-004). The `--server 0x%x` text is the handle's
+     * VALUE, preserved into the child by the listed copy. */
+    WCHAR cmdline[96];
+    static const WCHAR headlessPrefix[] =
+        WSTR("conhost.exe --headless --width 80 --height 25 --server 0x");
+    static const WCHAR windowPrefix[] = WSTR("conhost.exe --server 0x");
+    const WCHAR *prefix = SmssConsoleWantsWindow() ? windowPrefix : headlessPrefix;
+    int n = 0;
+    while (prefix[n] != 0)
+    {
+        cmdline[n] = prefix[n];
+        n++;
+    }
+    ULONG_PTR value = (ULONG_PTR)server;
+    for (int shift = 60; shift >= 0; shift -= 4)
+    {
+        static const WCHAR digits[] = WSTR("0123456789abcdef");
+        cmdline[n++] = digits[(value >> shift) & 0xf];
+    }
+    cmdline[n] = 0;
+
+    HANDLE ttyIn = 0, ttyOut = 0;
+    if (!SmssConsoleWantsWindow())
+    {
+        status = SmssOpenConDrv(0, WSTR("\\Device\\Serial0"), OBJ_INHERIT, &ttyIn);
+        if (status == STATUS_SUCCESS)
+            status = SmssOpenConDrv(0, WSTR("\\Device\\Serial0"), OBJ_INHERIT, &ttyOut);
+        if (status != STATUS_SUCCESS)
+        {
+            SmssPrintf("[KTEST] conhost FAIL (tty open=%x)\n", SMSS_HEX(status));
+            return;
+        }
+    }
+
     static HANDLE SmssConhostProcess, SmssConhostThread;
-    NTSTATUS status = SmssSpawn(path, 0, 0, &SmssConhostProcess, &SmssConhostThread);
+    status =
+        SmssSpawnConhost(cmdline, server, ttyIn, ttyOut, &SmssConhostProcess, &SmssConhostThread);
+    /* The child owns its copies now; closing smss's ends this side's claim
+     * (alloc_console's own CloseHandle(server) moment). On failure the
+     * closes are the unwind. */
+    NtClose(server);
+    if (ttyIn != 0)
+        NtClose(ttyIn);
+    if (ttyOut != 0)
+        NtClose(ttyOut);
     if (status != STATUS_SUCCESS)
     {
         SmssPrintf("[KTEST] conhost FAIL (create=%x)\n", SMSS_HEX(status));
         return;
     }
 
-    /* The console handles the children will inherit; opening needs no
-     * server, only \Device\ConDrv itself. */
-    status = SmssOpenConDrv(WSTR("\\Device\\ConDrv\\Connection"), 0, &SmssConsoleConnection);
-    if (status == STATUS_SUCCESS)
-        status = SmssOpenConDrv(WSTR("\\Device\\ConDrv\\Input"), OBJ_INHERIT, &SmssConsoleInput);
-    if (status == STATUS_SUCCESS)
-        status = SmssOpenConDrv(WSTR("\\Device\\ConDrv\\Output"), OBJ_INHERIT, &SmssConsoleOutput);
+    /* The attach probe: one GET_MODE through the console object. It queues
+     * on the console's request stream and completes when conhost's first
+     * pump answers it; a conhost that dies instead fails it fast
+     * (drivers/condrv.c CondrvServerGone fails every parked verb). */
+    IO_STATUS_BLOCK iosb;
+    ULONG mode = 0;
+    status = NtDeviceIoControlFile(SmssConsoleHandle, 0, 0, 0, &iosb, IOCTL_CONDRV_GET_MODE, 0, 0,
+                                   &mode, sizeof(mode));
     if (status != STATUS_SUCCESS)
     {
-        SmssPrintf("[KTEST] conhost FAIL (condrv open=%x)\n", SMSS_HEX(status));
+        SmssPrintf("[KTEST] conhost FAIL (no server attach: %x)\n", SMSS_HEX(status));
         return;
     }
-
-    /* 30 s, not 10: the windowed conhost (GUI-5) loads user32/gdi32/win32u
-     * and completes its desktop-server connect before it can open the
-     * ConDrv server device — a long prologue under TCG. The headless
-     * conhost attaches in a fraction of either bound; only the failure
-     * detection latency changes. */
-    for (int waitedMs = 0; waitedMs < 30000; waitedMs += 100)
-    {
-        if (SmssConsoleServerAttached())
-        {
-            SmssConsoleReady = 1;
-            SmssSay("[KTEST] conhost up\n");
-            return;
-        }
-        SmssSleep(100);
-    }
-    SmssSay("[KTEST] conhost FAIL (no server attach)\n");
+    SmssConsoleReady = 1;
+    SmssSay("[KTEST] conhost up\n");
 }

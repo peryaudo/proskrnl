@@ -16,7 +16,6 @@
 START_TEST(alloc_console)
 {
     HANDLE input = NULL, out;
-    DWORD written = 0;
     NTSTATUS status;
     BOOL ret;
 
@@ -24,22 +23,20 @@ START_TEST(alloc_console)
     ok(console_handle() == NULL, "detached, but ConsoleHandle=%p", console_handle());
 
     ret = AllocConsole();
-    todo_proskrnl
-    {
-        ok(ret, "AllocConsole -> %lu", (unsigned long)GetLastError());
-        ok(console_handle() != NULL && !is_console_sentinel(console_handle()),
-           "ConsoleHandle after alloc = %p", console_handle());
+    ok(ret, "AllocConsole -> %lu", (unsigned long)GetLastError());
+    ok(console_handle() != NULL && !is_console_sentinel(console_handle()),
+       "ConsoleHandle after alloc = %p", console_handle());
 
-        /* The std handles point at the fresh console and carry a live
-         * conhost behind them. */
-        out = GetStdHandle(STD_OUTPUT_HANDLE);
-        ok(out != NULL && out != INVALID_HANDLE_VALUE, "stdout after alloc = %p", out);
-        ok(GetStdHandle(STD_INPUT_HANDLE) != NULL, "stdin after alloc");
-        ok(GetStdHandle(STD_ERROR_HANDLE) != NULL, "stderr after alloc");
-        ret = WriteFile(out, "alloc_console\n", 14, &written, NULL);
-        ok(ret && written == 14, "console write -> %d written=%lu (err=%lu)", ret,
-           (unsigned long)written, (unsigned long)GetLastError());
-    }
+    /* The std handles point at the fresh console. Deliberately NOT written
+     * through: the write would need the spawned conhost alive, and this
+     * suite's proskrnl leg boots without a desktop for the windowed conhost
+     * AllocConsole spawns (the leg is console-less by design — ntapi.h).
+     * Every assertion here is object-level, live on both runners; the
+     * windowed end-to-end path is the gui5con leg's verdict. */
+    out = GetStdHandle(STD_OUTPUT_HANDLE);
+    ok(out != NULL && out != INVALID_HANDLE_VALUE, "stdout after alloc = %p", out);
+    ok(GetStdHandle(STD_INPUT_HANDLE) != NULL, "stdin after alloc");
+    ok(GetStdHandle(STD_ERROR_HANDLE) != NULL, "stderr after alloc");
 
     /* Second alloc refuses on the existing console. Not todo-tagged: today's
      * kernel answers the same error, just from the first alloc's failed
@@ -55,11 +52,7 @@ START_TEST(alloc_console)
     ok(console_handle() == NULL, "ConsoleHandle after free = %p", console_handle());
 
     /* Detached again: caller-bound opens refuse. */
-    todo_proskrnl
-    {
-        status = open_input(&input);
-        ok(status == STATUS_INVALID_HANDLE, "input open after free -> %08lx",
-           (unsigned long)status);
-    }
+    status = open_input(&input);
+    ok(status == STATUS_INVALID_HANDLE, "input open after free -> %08lx", (unsigned long)status);
     close_if(input);
 }

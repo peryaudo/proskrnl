@@ -19,22 +19,19 @@ START_TEST(server_multi)
     /* Normalize: this process never binds a console in this test. */
     FreeConsole();
 
-    todo_proskrnl
-    {
-        status = open_server(&s1);
-        ok(status == STATUS_SUCCESS, "first server open -> %08lx", (unsigned long)status);
+    status = open_server(&s1);
+    ok(status == STATUS_SUCCESS, "first server open -> %08lx", (unsigned long)status);
 
-        /* The second, concurrent server: a fresh console server of its own. */
-        status = open_server(&s2);
-        ok(status == STATUS_SUCCESS, "second server open -> %08lx", (unsigned long)status);
+    /* The second, concurrent server: a fresh console server of its own. */
+    status = open_server(&s2);
+    ok(status == STATUS_SUCCESS, "second server open -> %08lx", (unsigned long)status);
 
-        /* Closing the first does not invalidate the second, and a third open
-         * mints again — no slot is being recycled. */
-        close_if(s1);
-        s1 = NULL;
-        status = open_server(&s3);
-        ok(status == STATUS_SUCCESS, "third server open -> %08lx", (unsigned long)status);
-    }
+    /* Closing the first does not invalidate the second, and a third open
+     * mints again — no slot is being recycled. */
+    close_if(s1);
+    s1 = NULL;
+    status = open_server(&s3);
+    ok(status == STATUS_SUCCESS, "third server open -> %08lx", (unsigned long)status);
 
     close_if(s2);
     close_if(s3);

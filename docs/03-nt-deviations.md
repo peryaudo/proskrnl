@@ -523,11 +523,31 @@ What the M9 bring-up pinned, deviated on, or left unbuilt:
   carry a runtime-dormant proskrnl leg as a fork commit on
   `proskrnl-target` (Art. 10); the CLIENT surface — `IOCTL_CONDRV_*` and
   its structs — stays fully generated (`abi/ntcondrv.h`, G4).
-- **One global console.** `IOCTL_CONDRV_BIND_PID` is answered kernel-side;
-  every Connection/Reference/Input/Output open names the same console, and
-  `hStdOutput`/`hStdError` share one Output open (the shape kernelbase's own
-  std-handle setup produces). Per-console isolation arrives when something
-  needs a second console.
+- **Consoles are per-client, on demand** (M11 — *retires the M9 "one
+  global console" deviation*). The object model is wineserver's
+  (`server/console.c`), pinned by `tests/ntapi/sem_console/`: every
+  `\Device\ConDrv\Server` open mints a console server; `"Reference"`
+  relative to it mints THE console, once; `"Connection"` relative to the
+  console binds the opening process (`EPROCESS.console`, wineserver's
+  field of the same name); Input/Output opens and their I/O resolve the
+  CALLER's binding at every call, never a captured pointer; closing a
+  connection handle unbinds the closing process; `IOCTL_CONDRV_BIND_PID`
+  adopts a target's console with wineserver's exact refusals. Kernel-side
+  wrinkles vs. wineserver, all inside the same observable behavior:
+  - a ScreenBuffer open holds a counted console pointer (wineserver's
+    `screen_buffer->input` is uncounted) so its `CLOSE_OUTPUT` reaches the
+    right conhost even after the opener unbinds;
+  - the connection unbind runs at the connection FILE_OBJECT's Cleanup in
+    the closing process's context (wineserver has a per-process
+    close-handle hook; proskrnl's Io has Cleanup), with a process-delete
+    fallback for a connection handle duplicated across processes;
+  - conhost learns its console's last client is gone by its next Server
+    read answering `STATUS_INVALID_HANDLE` (wineserver's
+    `get_next_console_request` on a console-less server) — the boot
+    console never hits this because smss holds its Reference forever;
+  - a serial-wire `^C` (HACK-004) routes to the console whose conhost is
+    doing the tty read (the reading thread's process names it); a `^C`
+    with no such conhost is dropped loudly.
 - **The console transport is the COM1 serial wire, both directions**
   (HACK-004, docs/10): conhost's tty is `\Device\Serial0`, RX polled — see
   the ledger entry for scope and retirement.
@@ -576,20 +596,20 @@ first (Art. 5). Wrinkles worth remembering:
   `*info` on its ordinary success path — but kernelbase never reads it
   either, so the divergence is unobservable through the PE stack (and
   `user/smss` relies on the NT shape).
-- **Console/std fixups mirror `server/process.c` `new_process`:** a real
-  (positive) `ConsoleHandle` in the child's params is re-duplicated to a
-  fresh child handle; the `CONSOLE_HANDLE_ALLOC*` sentinels and 0 pass
-  through untouched — under the single-global-console model (M9 note) the
-  sentinels still mean "no console bound". Without
-  `PROCESS_CREATE_FLAGS_INHERIT_HANDLES` the three std handles are
-  duplicated with invalid values tolerated. `bInheritHandles=FALSE` +
-  `STARTF_USESTDHANDLES` is deliberately unpinned: on the oracle the
-  console-less parent's `CONSOLE_HANDLE_ALLOC` headless console allocation
-  displaces the duplicated handles, and nothing on the CUI path uses it
-  (cmd always redirects with inherit).
-- **condrv's seeded std handles are born `OBJ_INHERIT`** (NT console
-  handles are inheritable); the console *reference* handle is not — the
-  create-time duplication covers it, as on wineserver.
+- **Console/std fixups mirror `server/process.c` `new_process` plus
+  ntdll's `create_startup_info` subsystem gate** (M11): the console (and,
+  without `PROCESS_CREATE_FLAGS_INHERIT_HANDLES`, the std handles) reach
+  the child ONLY when the child image is `IMAGE_SUBSYSTEM_WINDOWS_CUI`
+  (`dlls/ntdll/unix/env.c` 2164-2175, pinned by
+  `sem_console/subsystem_gate`) — a GUI child gets no console even from a
+  console-attached parent, which is what keeps GUI apps from ever
+  spawning a conhost. Within that gate: a real (positive) `ConsoleHandle`
+  is re-duplicated to a fresh child handle (the child is NOT bound here —
+  it binds itself through its Connection open, the one binding
+  authority); the `CONSOLE_HANDLE_ALLOC*` sentinels and 0 pass through
+  untouched and now reach stock kernelbase's `alloc_console`; without an
+  inherit, the three std handles are duplicated (invalid values
+  tolerated) only for a CUI child not steered by `STARTF_USESTDHANDLES`.
 - **Suspend takes effect at the target's next return to user mode**
   (CUI-4 — *retires the M10 "suspend of a run thread is unbuilt"
   deviation*). There is still no kernel preemption, so a foreign thread is

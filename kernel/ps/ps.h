@@ -22,6 +22,9 @@
 #include "kernel/mm/virtual.h"
 #include "kernel/init/initrd.h"
 
+struct CONDRV_CONSOLE; /* drivers/condrv.c: the per-console object the
+                        * EPROCESS binding below points at */
+
 typedef struct EPROCESS
 {
     DISPATCHER_HEADER header; /* signalled at termination, never reset */
@@ -126,11 +129,12 @@ typedef struct EPROCESS
     LIST_ENTRY threadListHead;
     LONG activeThreadCount;
 
-    /* M9/CUI-4: the console handle duplicated into THIS process's handle
-     * table by the create-path console fixup (a child inherits its parent's
-     * console through its RTL_USER_PROCESS_PARAMETERS.ConsoleHandle); 0 =
-     * not a console process — what the Ctrl+C fanout selects on. */
-    HANDLE consoleHandle;
+    /* M11: the process's console binding — wineserver's `process->console`
+     * (server/console.c), owned and maintained solely by drivers/condrv.c
+     * (bound by a Connection open or BIND_PID, unbound by the connection
+     * handle's close or process delete). 0 = not attached to any console —
+     * what the Ctrl+C fanout selects on, per console. */
+    struct CONDRV_CONSOLE *console;
 
     /* CUI-2: the primary token — a per-process DUPLICATE of the creator's
      * (never shared; wineserver's child rule, server/process.c), minted by
@@ -648,11 +652,17 @@ NTSTATUS PspCreateUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t 
 NTSTATUS PspInjectUserThread(PEPROCESS process, uint64_t startRoutine, uint64_t argument);
 
 /* CUI-4: deliver a console control event (CTRL_C_EVENT / CTRL_BREAK_EVENT) to
- * every process attached to the console, filtered by `groupId` when nonzero:
- * a new user thread runs ntdll's __wine_ctrl_routine with the event as its
- * argument, exactly as wineserver's propagate_console_signal + ntdll's
- * int_handler do. Called from drivers/condrv.c. */
-NTSTATUS PsPropagateConsoleCtrlEvent(ULONG event, uint64_t groupId);
+ * every process attached to `console` (M11: per console, never machine-wide),
+ * filtered by `groupId` when nonzero: a new user thread runs ntdll's
+ * __wine_ctrl_routine with the event as its argument, exactly as wineserver's
+ * propagate_console_signal + ntdll's int_handler do. Called from
+ * drivers/condrv.c, which owns the binding this filters on. */
+NTSTATUS PsPropagateConsoleCtrlEvent(struct CONDRV_CONSOLE *console, ULONG event, uint64_t groupId);
+
+/* NT's PsLookupProcessByProcessId (name and signature per MS docs — the
+ * WDK ntddk.h prototype): *processOut gets a REFERENCED EPROCESS, or
+ * STATUS_INVALID_CID when no live process has that id. */
+NTSTATUS PsLookupProcessByProcessId(HANDLE processId, PEPROCESS *processOut);
 
 /* The first ring-3 descent of a user thread (shared by process/thread.c):
  * enters user mode at the KTHREAD's user-start register state. */
