@@ -2759,18 +2759,19 @@ static const struct
 } CmpQemuBootFlags[] = {
     {"opt/org.proskrnl/interactive", WSTR("Interactive"), 0},
     {"opt/org.proskrnl/panic_not_implemented", WSTR("PanicOnNotImplemented"), 1},
-    /* The GUI/CUI switch. One image carries both consoles' worth of userland
-     * now, so which one a boot USES is a command-line decision like every
-     * other flag here: 1 (the default) is the windowed console over the
-     * desktop stack, 0 the serial one. Defaulted ON for the same reason
+    /* The GUI/CUI switch: 1 (the default) brings up the desktop stack, 0 is
+     * a CUI-only boot. Defaulted ON for the same reason
      * PanicOnNotImplemented is: the richer arrangement is the product, and
-     * dropping to the serial console has to be said out loud. */
+     * dropping it has to be said out loud. The boot CONSOLE is on the
+     * serial wire either way (issue #232 — the permanent debug channel,
+     * HACK-004); a desktop console is a thing a client allocates. */
     {"opt/org.proskrnl/gui", WSTR("Gui"), 1},
-    /* Where the CONSOLE goes on a boot that HAS a desktop: 0 (default) puts
-     * conhost in a window on it, 1 keeps it on the serial transport. Off by
-     * default because the windowed console is the product; a scripted leg
-     * that reads its verdict off the serial log says so. A no-op when
-     * `Gui` is 0 — that boot has nowhere to put a window. */
+    /* What the interactive SESSION is on a boot that has a desktop: 0 (the
+     * default) is the shell — explorer owns the desktop and is the
+     * launcher — and 1 is a serial-console session (a prompt driven
+     * off-box; the scripted GUI legs, whose verdicts are serial lines).
+     * A no-op when `Gui` is 0 — that session is on the serial console
+     * either way. */
     {"opt/org.proskrnl/serial", WSTR("Serial"), 0},
     /* Whether EXPLORER owns the desktop is NOT here: it is derived from `Gui`
      * and `Leg` by smss and published beside these as `ShellBoot`

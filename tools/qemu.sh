@@ -249,14 +249,15 @@ if [[ "${PANIC_NOTIMPL:-1}" == 0 ]]; then
     FWCFG_ARGS+=(-fw_cfg name=opt/org.proskrnl/panic_not_implemented,string=0)
 fi
 
-# GUEST_GUI=0 opts OUT of the windowed console. One image carries the whole
+# GUEST_GUI=0 opts OUT of the desktop stack. One image carries the whole
 # userland now, so GUI-vs-CUI is a boot decision like interactivity: the
-# kernel's default for any fw_cfg-bearing boot is the windowed console over
-# the desktop stack (kernel/cm/registry.c CmpQemuBootFlags), and a leg whose
-# verdict rides the SERIAL console — every scripted CUI leg, `make test`,
-# `make run` — says so here. Only the opt-out is passed, the
+# kernel's default for any fw_cfg-bearing boot is the desktop stack
+# (kernel/cm/registry.c CmpQemuBootFlags), and a CUI-only leg — every
+# scripted CUI leg, `make test`, `make run` — says so here. The boot
+# CONSOLE rides the serial wire on every boot (issue #232); GUI buys the
+# desktop, not the console. Only the opt-out is passed, the
 # panic_not_implemented arrangement: a hand-rolled qemu line gets the
-# product's console rather than the harness's.
+# product's arrangement rather than the harness's.
 if [[ "${GUEST_GUI:-1}" == 0 ]]; then
     FWCFG_ARGS+=(-fw_cfg name=opt/org.proskrnl/gui,string=0)
 fi
@@ -273,11 +274,13 @@ fi
 # difference was which client the session manager would find. Unset means the
 # empty string, and each consumer's reading of empty is its own default: no
 # leg is the plain boot suite, no filter is every case.
-# GUEST_SERIAL=1 keeps the console on the SERIAL transport on a boot that has
-# a desktop, instead of putting conhost in a window on it. Every scripted GUI
-# leg wants this: its verdict is a string in the serial log, and a windowed
-# console would also be in the picture gui6 photographs. A no-op when
-# GUEST_GUI=0 — that boot has nowhere to put a window.
+# GUEST_SERIAL=1 makes the interactive SESSION a serial-console session on a
+# boot that has a desktop, instead of the shell (user/smss/smss.c
+# SmssIsShellBoot). Every scripted GUI leg wants this: its verdict is a
+# string in the serial log, and explorer on the desktop would be scenery its
+# golden was never measured against. The boot console is on the serial wire
+# on every boot regardless (issue #232). A no-op when GUEST_GUI=0 — that
+# session is on the serial console either way.
 if [[ "${GUEST_SERIAL:-0}" != 0 ]]; then
     FWCFG_ARGS+=(-fw_cfg name=opt/org.proskrnl/serial,string=1)
 fi

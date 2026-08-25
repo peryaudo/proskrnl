@@ -784,16 +784,20 @@ real injected virtio input — with the unhook proved by counting, not by absenc
 The **font-metrics differential** GUI-3 deferred here is pinned: one binary, both sides, one
 committed golden table (`tests/gdi/fontdiff.golden`), re-diffed on every oracle run so it
 cannot go stale, and compared exactly (no epsilon) on the target.
-`tests/run/run.sh gui5con` is green: conhost is **dual-mode** — the pinned tree's `window.c`
-and resources compiled UNMODIFIED (zero fork commits, hack meter unchanged) and linked
-against the real user32/gdi32, the mode chosen at BOOT by the `gui` flag
-(`opt/org.proskrnl/gui`, HACK-006). It was chosen by which of two links an image baked,
-until one image began carrying every leg's payload. A windowed console
-found on the scanout, typed into through the real input queue, `^C` reaching a busy program
-through conhost's own `map_to_ctrlevent` (the CUI-4 serial intercept out of the loop), and
-the session's files read back out of the image. `make rungui` now boots that command prompt.
-The serial console is **permanent** by decision (docs/10 HACK-004 rescoped, not retired):
-a console that works while the GUI stack is broken is a kept debugging capability.
+`tests/run/run.sh gui5con` is green: conhost links the pinned tree's `window.c`
+and resources compiled UNMODIFIED (zero fork commits, hack meter unchanged)
+against the real user32/gdi32. It was dual-mode at GUI-5 — one boot console, its
+destination a boot flag; since issue #232 consoles are **per-client and on
+demand** (wineserver's model in `drivers/condrv.c`, stock kernelbase's
+`alloc_console` unmodified above it), so the windowed conhost in this leg is
+one a CUI client spawned for itself, located on the scanout, typed into
+through the real input queue, `^C` reaching a busy program through conhost's
+own `map_to_ctrlevent` (the CUI-4 serial intercept out of the loop), and the
+session's files read back out of the image. `make rungui` boots to the shell;
+a command prompt is a thing launched ON it.
+The serial console is **permanent** by decision (docs/10 HACK-004 rescoped, not
+retired) and, since issue #232, on EVERY boot — GUI boots included: a console
+that works while the GUI stack is broken is a kept debugging capability.
 **The trophy: `user32:msg` runs end to end** on the full GUI stack (`run.sh winetest-gui`,
 now IN CI) — 21.5 kloc and ~85 test functions, every one of them entered, winetest's own
 failure count arriving as the NT exit status and ratcheted against

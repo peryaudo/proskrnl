@@ -73,13 +73,23 @@ NTSTATUS SmssSpawn(const WCHAR *ntPath, const WCHAR *cmdline, int console, HANDL
             0, 0, PROCESS_PARAMS_FLAG_NORMALIZED);
         if (status != STATUS_SUCCESS)
             return status;
-        if (console)
+        if (console == 1)
         {
             /* The pseudoconsole-attach seeding (header comment): the
              * create-path fixup re-duplicates the console handle into the
              * child; the child binds and builds its own std handles. */
             params->ConsoleHandle = SmssConsoleHandle;
             params->ConsoleFlags = 2;
+        }
+        else if (console == 2)
+        {
+            /* A desktop console client: the ALLOC sentinel is what
+             * kernelbase's CreateProcess hands a console-less parent's CUI
+             * child (dlls/kernelbase/process.c 196-204), and the child's
+             * init_console answers it with the stock alloc_console — its
+             * own console, its own windowed conhost (the gui5con leg's
+             * subject). */
+            params->ConsoleHandle = CONSOLE_HANDLE_ALLOC;
         }
         else
         {
@@ -338,16 +348,13 @@ void SmssStartConhost(void)
         return;
     }
 
-    /* The mode decision stays smss's while a boot has one console: a
-     * desktop boot that did not ask for the serial console gets the
-     * windowed conhost (SmssConsoleWantsWindow); everything scripted gets
-     * the serial tty (HACK-004). The `--server 0x%x` text is the handle's
-     * VALUE, preserved into the child by the listed copy. */
+    /* The boot console is ALWAYS the serial console (issue #232, HACK-004):
+     * every boot — GUI boots included — keeps the serial debug channel, and
+     * a desktop console is a thing a CLIENT allocates (stock alloc_console
+     * spawns its own windowed conhost). The `--server 0x%x` text is the
+     * handle's VALUE, preserved into the child by the listed copy. */
     WCHAR cmdline[96];
-    static const WCHAR headlessPrefix[] =
-        WSTR("conhost.exe --headless --width 80 --height 25 --server 0x");
-    static const WCHAR windowPrefix[] = WSTR("conhost.exe --server 0x");
-    const WCHAR *prefix = SmssConsoleWantsWindow() ? windowPrefix : headlessPrefix;
+    static const WCHAR prefix[] = WSTR("conhost.exe --headless --width 80 --height 25 --server 0x");
     int n = 0;
     while (prefix[n] != 0)
     {
@@ -363,16 +370,13 @@ void SmssStartConhost(void)
     cmdline[n] = 0;
 
     HANDLE ttyIn = 0, ttyOut = 0;
-    if (!SmssConsoleWantsWindow())
+    status = SmssOpenConDrv(0, WSTR("\\Device\\Serial0"), OBJ_INHERIT, &ttyIn);
+    if (status == STATUS_SUCCESS)
+        status = SmssOpenConDrv(0, WSTR("\\Device\\Serial0"), OBJ_INHERIT, &ttyOut);
+    if (status != STATUS_SUCCESS)
     {
-        status = SmssOpenConDrv(0, WSTR("\\Device\\Serial0"), OBJ_INHERIT, &ttyIn);
-        if (status == STATUS_SUCCESS)
-            status = SmssOpenConDrv(0, WSTR("\\Device\\Serial0"), OBJ_INHERIT, &ttyOut);
-        if (status != STATUS_SUCCESS)
-        {
-            SmssPrintf("[KTEST] conhost FAIL (tty open=%x)\n", SMSS_HEX(status));
-            return;
-        }
+        SmssPrintf("[KTEST] conhost FAIL (tty open=%x)\n", SMSS_HEX(status));
+        return;
     }
 
     static HANDLE SmssConhostProcess, SmssConhostThread;

@@ -47,11 +47,11 @@ static void SessionReadBootString(const WCHAR *valueName, char *out, ULONG outCh
 }
 
 /* Read the two boot strings once, whoever asks first. SessionRun wants them
- * at the top of the test session; SessionIsWindowedConsoleLeg and
- * SessionIsShellIntegrationLeg are asked much earlier, before the servers
- * start, because whether this boot HAS a shell is a property of the leg
- * (below). Every reader of SessionLeg calls this first -- the one that did
- * not is what published ShellBoot=1 on a boot that then evaluated 0. */
+ * at the top of the test session; SessionIsShellIntegrationLeg is asked
+ * much earlier, before the servers start, because whether this boot HAS a
+ * shell is a property of the leg (below). Every reader of SessionLeg calls
+ * this first -- the one that did not is what published ShellBoot=1 on a
+ * boot that then evaluated 0. */
 void SessionLoadBootStrings(void)
 {
     static int SessionBootStringsLoaded;
@@ -104,38 +104,6 @@ static int SessionLegIs(const char *name)
  * explorer owning the desktop, photographed against
  * tests/gui/golden/desktop.ppm. A leg whose subject is the shell asks for the
  * shell; nothing else does. */
-/* The one leg whose subject is a CONSOLE WINDOW: GUI-5's conhost dual-mode
- * gate, which locates the window on the scanout, clicks it, types into it and
- * compares its pixels.
- *
- * One of the two boot decisions that read a leg NAME (GUI-6's shell
- * integration, just above, is the other). It is here rather than in a flag
- * because there is no flag that could carry it: this machine
- * has exactly ONE console -- smss creates it at startup and `ConsoleWindow`
- * picks its destination -- so a boot has a serial console or a windowed one,
- * never both. `Serial`=1 would leave this leg no window to drive, and
- * `Serial`=0 alone is indistinguishable from `make rungui`, which must land
- * on the shell. (A CUI leg that wants a prompt does not need `Serial` at all
- * -- with `Gui`=0 the console is on serial already and the flag is a no-op;
- * `Serial`=1 is how a leg that HAS a desktop asks for the same thing.)
- *
- * The exit is a second console, not a cleverer derivation: give smss a way to
- * open one on the desktop while its own stays on serial, and this row goes. */
-static int SessionIsWindowedConsoleLegName(const char *leg)
-{
-    const char *consoleLeg = "gui5con";
-    int i = 0;
-    while (leg[i] != 0 && consoleLeg[i] != 0 && leg[i] == consoleLeg[i])
-        i++;
-    return leg[i] == 0 && consoleLeg[i] == 0;
-}
-
-int SessionIsWindowedConsoleLeg(void)
-{
-    SessionLoadBootStrings(); /* asked before SessionRun: nothing else has */
-    return SessionIsWindowedConsoleLegName(SessionLeg);
-}
-
 static int SessionIsShellIntegrationLegName(const char *leg)
 {
     const char *shellLeg = "gui6";
@@ -1003,6 +971,9 @@ typedef struct
     const char *tag;                /* the [KTEST] prefix: "gui", "gui2", ... */
     const char *prologueTag;        /* names the prologue in its exit line */
     const char *foregroundName;     /* set when returning at all is a FAIL */
+    int foregroundConsole;          /* SmssSpawn's console mode for the
+                                     * foreground: 0 = none, 2 = the client
+                                     * allocates its own (gui5con's cmd) */
 } GUI_LEG, *PGUI_LEG;
 
 /* Designated initializers throughout: an omitted field is the absent case
@@ -1153,6 +1124,19 @@ static const GUI_LEG SessionGuiLegs[] = {
                                "C:\\windows\\system32\\explorer.exe C:\\shelf"),
      .tag = "gui6",
      .foregroundName = "explorer.exe"},
+
+    /* The console-window gate, the honest way (issue #232): a CUI client on
+     * the desktop whose console the CLIENT allocates — cmd's own kernelbase
+     * runs the stock alloc_console and spawns the windowed conhost the leg
+     * locates, types into and ^C-interrupts. No leg-name special case
+     * remains: the boot console stays wherever the boot flags put it
+     * (Serial=1 here, so the [KTEST] verdicts ride the serial wire), and
+     * this cmd exiting — the typed `exit` — is the leg's designed end, so
+     * no foregroundName. */
+    {.leg = "gui5con",
+     .foreground = WSTR("\\??\\C:\\windows\\system32\\cmd.exe"),
+     .tag = "gui5con",
+     .foregroundConsole = 2},
 };
 
 /* Non-zero when a row matched the boot's leg — the caller convicts an
@@ -1193,7 +1177,8 @@ static int SessionFlowGui(void)
             }
         }
 
-        status = SmssRun(leg->foreground, leg->foregroundCmdline, 0, 0, &exitStatus);
+        status = SmssRun(leg->foreground, leg->foregroundCmdline, leg->foregroundConsole, 0,
+                         &exitStatus);
         /* Only reached if the client exited. Where it is written never to,
          * say FAIL by name rather than letting the boot fall through to a
          * sweep verdict the harness would read as a healthy end (Art. 12). */
@@ -1365,24 +1350,24 @@ static HANDLE SessionOpenShellProcess(NTSTATUS *snapshotStatus)
 }
 
 /* Park the interactive shell session on the desktop shell's LIFETIME. Its
- * exit ends the session (smss returns, the kernel powers the VM off), but its
- * launch is not ours to make: win32u auto-launches explorer for the first
- * GUI client that finds no desktop window — the windowed conhost, during
- * bringup, landed on desktop "shell" by the routing values
- * SmssShellDesktopConfig writes (dlls/win32u/winstation.c
- * get_desktop_window). Launching a second explorer here was the defect this
- * park replaces: Wine's explorer resolves desktop-window ownership by
- * EXITING the instance that finds the window already created
- * (programs/explorer/desktop.c manage_desktop, hwnd == 0), so smss parked on
- * a process whose immediate clean exit read as "session over" and powered
- * the VM off underneath a healthy desktop.
+ * exit ends the session (smss returns, the kernel powers the VM off). The
+ * launch is SessionInteractive's, explicit, but the park never trusts its
+ * own child: win32u can still auto-launch an explorer for a GUI client
+ * that finds no desktop window (dlls/win32u/winstation.c
+ * get_desktop_window), and Wine's explorer resolves desktop-window
+ * ownership by EXITING the instance that finds the window already created
+ * (programs/explorer/desktop.c manage_desktop, hwnd == 0). Parking on our
+ * own child was the defect this park replaces (e12bbb5): the child can BE
+ * the exiting loser, and a loser's immediate clean exit read as "session
+ * over" and powered the VM off underneath a healthy desktop — so the park
+ * scans for the WINNER by image name instead.
  *
  * The same exit-the-loser rule is why an exit re-scans instead of ending the
  * session: the explorer this found first can BE such a loser mid-exit, and
  * only "no explorer.exe left" means the shell is gone. The appear-wait is
- * bounded and loud — the windowed conhost has normally forced the launch
- * long before the session flows run, so its expiry means the shell never
- * came up, and an interactive boot has no runner watching a timeout. */
+ * bounded and loud — the explicit launch has normally produced a winner
+ * long before it expires, so its expiry means the shell never came up, and
+ * an interactive boot has no runner watching a timeout. */
 static void SessionParkOnShell(void)
 {
     NTSTATUS snapshotStatus = STATUS_SUCCESS;
@@ -1433,25 +1418,37 @@ void SessionInteractive(void)
      * launcher — that is what a shell is — so a human lands on the desktop
      * and starts what they want from it, exactly as they would on Windows.
      * Opening cmd.exe on top of that is a serial-console habit: there, the
-     * console is the only way in, so smss has to hand it over.
+     * console is the only way in, so smss has to hand it over. (A desktop
+     * console is a thing a human LAUNCHES from the shell now — cmd.exe from
+     * explorer allocates its own windowed conhost, issue #232.)
      *
      * A scripted boot that drives a CONSOLE session says so with `Serial`,
      * which is what SmssIsShellBoot subtracts -- the Flash fixtures start the
      * projector from a prompt and read their verdicts off that transport.
      * `make rungui` asks for no such thing and lands on the desktop; `make
-     * run` has no desktop to land on and takes the console either way. GUI-5's
-     * console-window leg is the one that still needs its NAME to be told from
-     * `make rungui`, and SmssIsShellBoot is where that is said.
+     * run` has no desktop to land on and takes the console either way.
+     *
+     * The shell is LAUNCHED here, explicitly — what userinit does on NT.
+     * With the boot console on the serial wire there is no windowed conhost
+     * at bringup to trip win32u's first-GUI-client auto-launch, so nothing
+     * else would start one. The launch is fire-and-forget, and the park
+     * below is what handles the launch RACING a residual auto-launch:
+     * Wine's explorer resolves desktop-window ownership by exiting the
+     * loser, and SessionParkOnShell parks on the WINNER found by scanning,
+     * not on this child (the e12bbb5 rule).
      *
      * Blocking on explorer is the park: the desktop shell does not exit, and
      * when it does the session is over and the kernel powers the VM off —
-     * the same contract `exit` has in the console session. The shell is NOT
-     * launched here — win32u's auto-launch already made one for the windowed
-     * conhost during bringup (SessionParkOnShell says why launching another
-     * powered the VM off under a healthy desktop). */
+     * the same contract `exit` has in the console session. */
     if (SmssIsShellBoot())
     {
         SmssSay("\nproskrnl: interactive desktop - explorer is the launcher\n\n");
+        static HANDLE SessionShellProcess, SessionShellThread;
+        NTSTATUS status = SmssSpawn(WSTR("\\??\\C:\\windows\\system32\\explorer.exe"),
+                                    WSTR("explorer.exe /desktop=shell,1280x800"), 0,
+                                    &SessionShellProcess, &SessionShellThread);
+        if (status != STATUS_SUCCESS)
+            SmssPrintf("proskrnl: explorer failed to start (%x)\n", SMSS_HEX(status));
         SessionParkOnShell();
         return;
     }

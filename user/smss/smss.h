@@ -58,10 +58,10 @@ void SmssQemuString(const WCHAR *valueName, WCHAR *out, ULONG outChars);
  * interactive (smss.c). */
 int SmssIsInteractiveBoot(void);
 
-/* Is this a WINDOWED-console boot? Reads "Gui", which defaults ON: one image
- * carries both arrangements, and the windowed console over the desktop stack
- * is the product — a boot whose verdict rides the serial console says so
- * (tools/qemu.sh GUEST_GUI=0). */
+/* Does this boot bring up the DESKTOP stack? Reads "Gui", which defaults
+ * ON: the desktop is the product, and a CUI-only boot says so
+ * (tools/qemu.sh GUEST_GUI=0). The boot console is on the serial wire
+ * either way (issue #232) — `Gui` decides the desktop, not the console. */
 int SmssIsGuiBoot(void);
 int SmssHasUserland(void);
 
@@ -76,11 +76,6 @@ int SmssIsShellBoot(void);
 /* Does this boot keep its console on the serial transport? (`Serial`) */
 int SmssIsSerialBoot(void);
 
-/* Does the BOOT console put up a window, or take the serial tty?
- * (= Gui && !Serial; user/smss/smss.c — the launch.c conhost spawn reads
- * it to pick the boot conhost's command line.) */
-int SmssConsoleWantsWindow(void);
-
 /* Publish SmssIsShellBoot's answer for the PE side (the desktop server and
  * winefb.drv). Call before any win32u client starts. */
 void SmssPublishShellBoot(void);
@@ -94,9 +89,12 @@ void SmssPublishShellBoot(void);
 extern RTL_USER_PROCESS_PARAMETERS *SmssOwnParams;
 
 /* Spawn `ntPath` ("\??\C:\...") and return its handles. `cmdline` 0 means
- * the DOS image path; `console` seeds the child's ConsoleHandle/hStd*
- * process-parameter fields from smss's ConDrv handles (valid only once
- * SmssStartConhost reported the server up). */
+ * the DOS image path. `console` seeds the child's console process-parameter
+ * fields: 0 = console-less (CONSOLE_HANDLE_SHELL_NO_WINDOW, the oracle's
+ * runner shape — launch.c says why), 1 = attach to the BOOT console (valid
+ * only once SmssStartConhost reported the server up), 2 = the client
+ * allocates its own console (the CONSOLE_HANDLE_ALLOC sentinel; a CUI
+ * child's kernelbase spawns its own windowed conhost). */
 NTSTATUS SmssSpawn(const WCHAR *ntPath, const WCHAR *cmdline, int console, HANDLE *processOut,
                    HANDLE *threadOut);
 /* Spawn and wait. timeoutMs 0 = forever. On STATUS_TIMEOUT the child is
@@ -135,7 +133,6 @@ const char *SessionLegName(void);
 /* Is the selected leg ABOUT the shell (GUI-6)? The one scripted leg that
  * wants explorer owning the desktop — see session.c. */
 int SessionIsShellIntegrationLeg(void);
-int SessionIsWindowedConsoleLeg(void);
 /* The interactive boot (make run): hand the console to a human cmd.exe;
  * returns when the user typed `exit` (the kernel powers off on smss exit). */
 void SessionInteractive(void);

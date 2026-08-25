@@ -3697,13 +3697,13 @@ gui5con() {
     mkdir -p "$dir"
     rm -f "$sock" "$ppm1" "$ppm2" "$log"
 
-    # An interactive GUEST under a headless HOST: this leg types through QMP
-    # and reads its verdict off $log, so GUEST_INTERACTIVE is set and
-    # INTERACTIVE is not. `Interactive` here buys the WINDOWED console, not the
-    # shell -- SmssIsShellBoot subtracts this leg by name, so it is the one
-    # interactive boot that is explicitly NOT a shell boot, and SessionRun
-    # takes the cmd.exe branch precisely because of that.
-    QMP_SOCK="$sock" LOG="$log" GUEST_INTERACTIVE=1 GUEST_LEG=gui5con \
+    # An ordinary scripted GUI leg now (issue #232): `Serial`=1 keeps the
+    # BOOT console on the serial wire (the [KTEST] verdicts ride it), and
+    # the leg row spawns cmd.exe with the ALLOC sentinel — cmd's own
+    # kernelbase runs the stock alloc_console and spawns the windowed
+    # conhost this leg locates, types into and ^C-interrupts. No
+    # interactive flag, no leg-name special case in the boot derivations.
+    QMP_SOCK="$sock" LOG="$log" GUEST_SERIAL=1 GUEST_LEG=gui5con \
         EXTRA_DEVICES="virtio-keyboard-pci virtio-tablet-pci" \
         MEM="${MEM:-1536M}" TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-GUI5CON-NEVER' \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
@@ -3726,9 +3726,7 @@ gui5con() {
     }
     qmp() { python3 "$ROOT/tests/gui/qmpctl.py" "$sock" "$@"; }
 
-    await '\[KTEST\] gui5con conhost mode=window' || { gui5con_fail "the windowed conhost never picked window mode"; return 1; }
-    await '\[KTEST\] conhost up' || { gui5con_fail "conhost never attached to condrv"; return 1; }
-    await 'starting cmd\.exe' || { gui5con_fail "the interactive cmd never started"; return 1; }
+    await '\[KTEST\] conhost up' || { gui5con_fail "the boot conhost never attached to condrv"; return 1; }
     await '\[KTEST\] gui2 input READY' || { gui5con_fail "no keyboard reader"; return 1; }
     await '\[KTEST\] gui4 mouse READY' || { gui5con_fail "no pointer reader"; return 1; }
 
