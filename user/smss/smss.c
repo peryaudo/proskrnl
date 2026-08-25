@@ -352,8 +352,12 @@ int SmssHasUserland(void)
     return SmssQemuFlag(WSTR("Userland"), 1) != 0;
 }
 
-/* Does this boot keep its console on the SERIAL transport? A no-op without a
- * desktop (see SmssConsoleWantsWindow). */
+/* Is this boot's interactive session a SERIAL-console session? The boot
+ * console rides the serial wire on EVERY boot now (issue #232 — the debug
+ * channel is permanent, HACK-004); what `Serial` still decides is only the
+ * SESSION: a desktop boot that asks for it gets a prompt driven off-box
+ * instead of the shell (SmssIsShellBoot). A no-op without a desktop — a
+ * `Gui`=0 session is on the serial console either way. */
 int SmssIsSerialBoot(void)
 {
     return SmssQemuFlag(WSTR("Serial"), 0) != 0;
@@ -384,46 +388,17 @@ int SmssIsShellBoot(void)
      * owning the desktop, photographed against a golden, and it takes its
      * verdict off the serial log like every scripted leg.
      *
-     * GUI-5's console-window leg is the one exception in the other direction:
-     * it needs the prompt AND the window, which `Serial` cannot express while
-     * a boot has just one console (SessionIsWindowedConsoleLeg says why).
-     *
-     * Two leg names are read here, not one -- gui5con to subtract it and gui6
-     * to add it -- and they are the only boot decisions left anywhere that
-     * read one. Both retire the same way: give smss a console it can open on
-     * the desktop while its own stays on serial, and gui5con becomes an
-     * ordinary `Serial`=1 leg; make the shell a thing a leg RUNS rather than a
-     * property of the session, and gui6 does too. */
-    if (SessionIsWindowedConsoleLeg())
-        return 0;
+     * gui6 is the ONE leg name still read by a boot decision. gui5con's
+     * subtraction retired with per-client consoles (issue #232): a desktop
+     * console is a thing a client ALLOCATES now, so that leg is an ordinary
+     * `Serial`=1 scripted row (user/smss/session.c SessionGuiLegs) and no
+     * name-derivation carries it. gui6 retires the same way: make the shell
+     * a thing a leg RUNS rather than a property of the session. */
     return SmssIsGuiBoot() &&
            ((SmssIsInteractiveBoot() && !SmssIsSerialBoot()) || SessionIsShellIntegrationLeg());
 }
 
-/* Does conhost put up a WINDOW, or stay on the serial transport?
- *
- * A window needs a desktop to put it on, so `Gui`=0 has nowhere to put one
- * and `Serial` is a no-op there. On a boot that HAS a desktop the windowed
- * console is the default -- it is the product -- and a leg whose verdict is
- * a string in the serial log says so with `Serial` (every scripted GUI gate
- * does; gui6 additionally would have a console window in the picture it
- * photographs).
- *
- * Not derived from `Interactive`, though it nearly could be: today every
- * boot wanting the windowed console happens to be interactive, but "is a
- * human here" and "where does the console go" are different questions, and
- * a derivation cannot express a windowed console on a scripted boot.
- *
- * TODO: `Gui`=0 with `Serial`=0 is the third destination -- a framebuffer
- * terminal, conhost drawing the console on the scanout with no desktop under
- * it. Unbuilt: that boot takes the serial transport today, which is why
- * `Serial` reads as a no-op rather than a refusal there. */
-int SmssConsoleWantsWindow(void)
-{
-    return SmssIsGuiBoot() && !SmssIsSerialBoot();
-}
-
-/* Publish both derived answers where the PE side reads its boot facts: the
+/* Publish the derived answer where the PE side reads its boot facts: the
  * volatile HKLM\Hardware\qemu the kernel seeded from fw_cfg. They sit beside
  * those values but are NOT of them -- the kernel publishes what the command
  * line SAID, smss publishes what it MEANS -- and both names differ from the
@@ -451,7 +426,6 @@ void SmssPublishShellBoot(void)
         int (*answer)(void);
     } derived[] = {
         {WSTR("ShellBoot"), SmssIsShellBoot},
-        {WSTR("ConsoleWindow"), SmssConsoleWantsWindow},
     };
     for (unsigned int i = 0; i < sizeof(derived) / sizeof(derived[0]); i++)
     {
@@ -470,10 +444,10 @@ void SmssPublishShellBoot(void)
     /* The INPUTS beside the answers: a derived value whose derivation cannot
      * be read off the log is one nobody can check. leg="" here is what sent
      * me chasing a winetest-gui boot that had been given GUEST_LEG=winetest-gui. */
-    SmssPrintf("smss: gui=%u interactive=%u leg=\"%s\" -> shell=%u conwindow=%u\n",
+    SmssPrintf("smss: gui=%u interactive=%u serial=%u leg=\"%s\" -> shell=%u\n",
                (unsigned int)(SmssIsGuiBoot() != 0), (unsigned int)(SmssIsInteractiveBoot() != 0),
-               SessionLegName(), (unsigned int)(SmssIsShellBoot() != 0),
-               (unsigned int)(SmssConsoleWantsWindow() != 0));
+               (unsigned int)(SmssIsSerialBoot() != 0), SessionLegName(),
+               (unsigned int)(SmssIsShellBoot() != 0));
 }
 
 RTL_USER_PROCESS_PARAMETERS *SmssOwnParams;

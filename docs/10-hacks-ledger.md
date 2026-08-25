@@ -115,15 +115,18 @@ Retirement: if/when route (b) moves desktop state into kernel/win32k.
 ## HACK-004: serial-backed console (COM1 ↔ condrv)
 
 ```
-Status:     active, PERMANENT by decision (GUI-5). Since GUI-5 conhost is dual-mode:
-            ONE binary, linking the real window.c and taking input from the real input
-            queue (exactly NT's shape), which puts the console in a WINDOW when the
-            boot derives `ConsoleWindow` (= `Gui && !Serial`) — this entry no longer
-            covers that mode. The serial backend is the console on every other boot
-            and stays indefinitely as a debug channel —
-            a serial console that works while the whole GUI stack is broken is a
-            debugging capability deliberately kept (decided at GUI-5 planning; it also
-            carries the entire CUI test surface: console/scm/procs/winetest legs).
+Status:     active, PERMANENT by decision (GUI-5; scope re-cut at M11/issue #232).
+            Consoles are per-client and on demand now: windowed consoles are stock
+            per-client conhosts a CUI client's own kernelbase spawns (alloc_console —
+            a non-hack per this doc's "Non-hacks" rule; the machinery is NT's), so
+            no windowed mode is a mode of THIS entry. What this entry covers is the
+            BOOT console: the one console smss mints at startup is bound to the
+            serial tty on EVERY boot — GUI boots included, which previously had no
+            serial console at all — and stays indefinitely as the debug channel.
+            A serial console that works while the whole GUI stack is broken is a
+            debugging capability deliberately kept (decided at GUI-5 planning; it
+            carries the entire CUI test surface: console/scm/procs/winetest legs,
+            and every [KTEST] verdict on a GUI leg).
 Introduced: M9
 Not in NT:  conhost's input arrives from win32k's raw input path (i8042prt/kbdclass →
             win32k → conhost) and its output is drawn into a window. A COM port is never
@@ -255,10 +258,9 @@ Scope:      arch/x86_64/fwcfg.c ; arch/x86_64/fwcfg.h ;
             (kernel/init/main.c KiIsInteractiveBoot and
             KiConfigurePanicOnNotImplemented, user/smss/smss.c
             SmssIsInteractiveBoot / SmssIsGuiBoot / SmssIsSerialBoot /
-            SmssIsShellBoot / SmssConsoleWantsWindow / SmssPublishShellBoot,
+            SmssIsShellBoot / SmssPublishShellBoot,
             user/smss/session.c SessionRun's leg dispatch and the two sweeps'
-            filters, user/wine/programs/conhost/proskrnl_glue.c
-            conhost_wants_window, user/wine/wineserver-lite/common/shim.c
+            filters, user/wine/wineserver-lite/common/shim.c
             probe_shell, user/wine/dlls/winefb.drv/display.c
             winefb_shell_boot, all three through the one reader
             third_party/wine/include/proskrnl_bootflag.h,

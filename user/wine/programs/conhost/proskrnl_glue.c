@@ -17,8 +17,10 @@
  * a headless one whose user32 and window.c references were satisfied by
  * stand-ins, and a windowed one with the real ones — baked as conhost.exe on
  * different images, so which console a boot had was a property of its media.
- * That link is now the only one, and which mode it RUNS in is the boot's
- * derived `ConsoleWindow` (= `Gui && !Serial`; user/smss/smss.c).
+ * That link is now the only one, and which mode a given conhost RUNS in is
+ * its COMMAND LINE — written by whoever launched it: smss's boot-console
+ * spawn always says `--headless` (the serial console, HACK-004), and stock
+ * kernelbase's alloc_console spawns the windowed kind (issue #232).
  */
 #include <stdarg.h>
 #include <stddef.h>
@@ -147,9 +149,6 @@ void __attribute__((ms_abi)) conhost_start( void *peb )
             ExitProcess( 1 );
         }
         NtClose( srv_image );
-        /* The gui5con leg's marker (tests/run/run.sh awaits it) — retired
-         * with the leg's rework to a client-allocated console. */
-        display( "[KTEST] gui5con conhost mode=window\n" );
     }
 
     ret = wmain( argc, argv );
