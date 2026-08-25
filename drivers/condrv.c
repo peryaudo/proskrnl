@@ -757,6 +757,17 @@ static NTSTATUS CondrvConsoleCreate(PIO_DEVICE device, PFILE_OBJECT file,
         InsertTailList(&CondrvConsoleList, &mint->listEntry);
         kind = CondrvOpenServer;
         console = mint;
+        /* The request pump is NtReadFile/NtWriteFile HERE (the fork
+         * transport, drivers/condrvproto.h) where wineserver serves a
+         * get_next_console_request server call — which has no file-access
+         * dimension, so kernelbase opens the server handle PROPERTIES-ONLY
+         * (dlls/kernelbase/console.c create_console_server:
+         * FILE_WRITE_PROPERTIES | FILE_READ_PROPERTIES | SYNCHRONIZE). The
+         * data access the pump needs is therefore this device's to grant,
+         * not the caller's to request; without it the alloc_console-spawned
+         * conhost's first fetch answered STATUS_ACCESS_DENIED and it exited
+         * (docs/03 M11 note). */
+        file->grantedAccess |= FILE_READ_DATA | FILE_WRITE_DATA;
     }
     else if (rootOpen != 0 && rootOpen->kind == CondrvOpenServer &&
              CondrvNameIs(path, WSTR("Reference")))
