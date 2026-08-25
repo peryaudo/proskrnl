@@ -42,26 +42,6 @@
 
 int __cdecl wmain( int argc, WCHAR *argv[] );
 
-/* Window mode or serial mode, decided at BOOT time: the volatile
- * \Registry\Machine\Hardware\qemu "ConsoleWindow" value, which smss DERIVES
- * from the boot's `Gui` and `Interactive` flags and publishes before this
- * process starts (user/smss/smss.c SmssConsoleWantsWindow). A window needs a
- * desktop to sit on and a human to read it; every scripted leg takes its
- * verdict off the serial transport, the desktop legs included.
- *
- * Deliberately NOT a disk probe: every image carries the desktop server now,
- * so "is wineserver-lite here" no longer distinguishes anything — which is
- * exactly what a disk probe would have got wrong on the gui3/gui4/winetest-gui
- * images back when it might have been tried. */
-static int conhost_wants_window( void )
-{
-    /* Absent key = not a QEMU guest, and the product's console is the
-     * windowed one, so the default there is ON — the `whenNotQemu` argument,
-     * which is the only thing that legitimately differs between the three
-     * askers of this key (third_party/wine/include/proskrnl_bootflag.h). */
-    return prsk_qemu_boot_flag( L"ConsoleWindow", 1 ) != 0;
-}
-
 static void display( const char *text )
 {
     WCHAR wide[128];
@@ -102,77 +82,79 @@ static HANDLE open_device( const WCHAR *path, ACCESS_MASK access )
     return status ? NULL : handle;
 }
 
+/* The REAL command line, parsed. Whoever launched this conhost decided its
+ * mode there: stock kernelbase's alloc_console spawns
+ * `conhost.exe --server 0x%x` (windowed; dlls/kernelbase/console.c
+ * 472-475, `--headless` appended only for no-window allocs), and smss's
+ * boot-console launch passes `--headless` plus the tty pair in the std
+ * handles (user/smss/launch.c SmssStartConhost). conhost's arguments are
+ * unquoted single tokens except argv[0], so the split is: a quoted or bare
+ * first token, then whitespace-separated words (wmain's own parser,
+ * conhost.c 3030-3080, consumes them pairwise). */
+#define CONHOST_MAX_ARGS 16
+
 void __attribute__((ms_abi)) conhost_start( void *peb )
 {
-    static WCHAR arg_server[19]; /* L"0x" + 16 digits */
-    static WCHAR *argv_headless[] = { (WCHAR *)L"conhost.exe", (WCHAR *)L"--headless",
-                                      (WCHAR *)L"--width", (WCHAR *)L"80",
-                                      (WCHAR *)L"--height", (WCHAR *)L"25",
-                                      (WCHAR *)L"--server", arg_server, NULL };
-    /* Window mode: no --headless, no tty, no size override — the screen
-     * buffer and window take conhost's own defaults exactly as under Wine
-     * (80x150 buffer, an 80x25 window from load_config). */
-    static WCHAR *argv_window[] = { (WCHAR *)L"conhost.exe", (WCHAR *)L"--server", arg_server,
-                                    NULL };
-    HANDLE server;
-    ULONG_PTR value;
-    int pos = 0;
+    static WCHAR cmdline[512];
+    static WCHAR *argv[CONHOST_MAX_ARGS + 1];
+    RTL_USER_PROCESS_PARAMETERS *params = NtCurrentTeb()->Peb->ProcessParameters;
+    int argc = 0;
+    int headless = 0;
     int ret = 1;
 
     (void)peb;
 
-    server = open_device( L"\\Device\\ConDrv\\Server",
-                          FILE_WRITE_PROPERTIES | FILE_READ_PROPERTIES |
-                          FILE_READ_DATA | FILE_WRITE_DATA );
-    if (server)
-    {
-        value = (ULONG_PTR)server;
-        arg_server[pos++] = '0';
-        arg_server[pos++] = 'x';
-        for (int shift = 60; shift >= 0; shift -= 4)
-        {
-            static const WCHAR digits[] = L"0123456789abcdef";
-            arg_server[pos++] = digits[(value >> shift) & 0xf];
-        }
-        arg_server[pos] = 0;
+    unsigned int chars = params->CommandLine.Length / sizeof(WCHAR);
+    if (chars > 511) chars = 511;
+    memcpy( cmdline, params->CommandLine.Buffer, chars * sizeof(WCHAR) );
+    cmdline[chars] = 0;
 
-        if (conhost_wants_window())
+    WCHAR *p = cmdline;
+    while (*p && argc < CONHOST_MAX_ARGS)
+    {
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+        if (*p == '"')
         {
-            /* conhost is a desktop-server CLIENT at image-load time (user32
-             * -> win32u connects during Ldr init). Every image carries the
-             * server now, so this check is no longer about the media -- it is
-             * the G12 refusal for a broken bake: without the server win32u
-             * would go in-process and this conhost would become the desktop's
-             * OWNER, the split-brain user/wine/wineserver-lite/client/call.c
-             * names. Refuse loudly instead of running wrong. */
-            HANDLE srv_image = open_device( PRSK_SRV_IMAGE, FILE_READ_ATTRIBUTES );
-            if (!srv_image)
-            {
-                display( "[KTEST] gui5con conhost FAIL "
-                         "(no wineserver-lite on this volume: a broken bake)\n" );
-                ExitProcess( 1 );
-            }
-            NtClose( srv_image );
-            display( "[KTEST] gui5con conhost mode=window\n" );
-            ret = wmain( 3, argv_window );
+            argv[argc++] = ++p;
+            while (*p && *p != '"') p++;
         }
         else
         {
-            HANDLE tty_in = open_device( L"\\Device\\Serial0", FILE_READ_DATA );
-            HANDLE tty_out = open_device( L"\\Device\\Serial0", FILE_WRITE_DATA );
-            if (tty_in && tty_out)
-            {
-                /* wmain's headless path takes the tty pair from the std
-                 * handles (HACK-004 — the serial console, permanent). */
-                SetStdHandle( STD_INPUT_HANDLE, tty_in );
-                SetStdHandle( STD_OUTPUT_HANDLE, tty_out );
-                SetStdHandle( STD_ERROR_HANDLE, tty_out );
-                ret = wmain( 8, argv_headless );
-            }
+            argv[argc++] = p;
+            while (*p && *p != ' ' && *p != '\t') p++;
         }
+        if (*p) *p++ = 0;
     }
+    argv[argc] = NULL;
+    for (int i = 1; i < argc; i++)
+        if (!wcscmp( argv[i], L"--headless" )) headless = 1;
+
+    if (!headless)
+    {
+        /* conhost is a desktop-server CLIENT at image-load time (user32
+         * -> win32u connects during Ldr init). Every image carries the
+         * server now, so this check is no longer about the media -- it is
+         * the G12 refusal for a broken bake: without the server win32u
+         * would go in-process and this conhost would become the desktop's
+         * OWNER, the split-brain user/wine/wineserver-lite/client/call.c
+         * names. Refuse loudly instead of running wrong. */
+        HANDLE srv_image = open_device( PRSK_SRV_IMAGE, FILE_READ_ATTRIBUTES );
+        if (!srv_image)
+        {
+            display( "[KTEST] conhost FAIL "
+                     "(window mode with no wineserver-lite on this volume: a broken bake)\n" );
+            ExitProcess( 1 );
+        }
+        NtClose( srv_image );
+        /* The gui5con leg's marker (tests/run/run.sh awaits it) — retired
+         * with the leg's rework to a client-allocated console. */
+        display( "[KTEST] gui5con conhost mode=window\n" );
+    }
+
+    ret = wmain( argc, argv );
     if (ret)
-        display( "[KTEST] gui5con conhost FAIL (wmain returned nonzero)\n" );
+        display( "[KTEST] conhost FAIL (wmain returned nonzero)\n" );
     ExitProcess( (UINT)ret );
 }
 

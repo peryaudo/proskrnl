@@ -32,60 +32,50 @@ START_TEST(binding_lifecycle)
     FreeConsole();
 
     /* --- unbound refusals -------------------------------------------------- */
-    todo_proskrnl
-    {
-        status = open_input(&probe);
-        ok(status == STATUS_INVALID_HANDLE, "unbound input open -> %08lx", (unsigned long)status);
-        close_if(probe);
-        probe = NULL;
+    status = open_input(&probe);
+    ok(status == STATUS_INVALID_HANDLE, "unbound input open -> %08lx", (unsigned long)status);
+    close_if(probe);
+    probe = NULL;
 
-        status = open_output(&probe);
-        ok(status == STATUS_INVALID_HANDLE, "unbound output open -> %08lx", (unsigned long)status);
-        close_if(probe);
-        probe = NULL;
+    status = open_output(&probe);
+    ok(status == STATUS_INVALID_HANDLE, "unbound output open -> %08lx", (unsigned long)status);
+    close_if(probe);
+    probe = NULL;
 
-        status = open_screen_buffer(&probe);
-        ok(status == STATUS_INVALID_HANDLE, "unbound screen-buffer open -> %08lx",
-           (unsigned long)status);
-        close_if(probe);
-        probe = NULL;
-    }
+    status = open_screen_buffer(&probe);
+    ok(status == STATUS_INVALID_HANDLE, "unbound screen-buffer open -> %08lx",
+       (unsigned long)status);
+    close_if(probe);
+    probe = NULL;
 
     /* An absolute Connection opens fine unbound — and binds nothing. */
     status = open_connection(&conn0, NULL);
     ok(status == STATUS_SUCCESS, "absolute connection open -> %08lx", (unsigned long)status);
-    todo_proskrnl
-    {
-        status = open_reference(&probe, conn0);
-        ok(status == STATUS_INVALID_HANDLE, "reference under unbound connection -> %08lx",
-           (unsigned long)status);
-        close_if(probe);
-        probe = NULL;
-    }
+    status = open_reference(&probe, conn0);
+    ok(status == STATUS_INVALID_HANDLE, "reference under unbound connection -> %08lx",
+       (unsigned long)status);
+    close_if(probe);
+    probe = NULL;
     close_if(conn0);
     conn0 = NULL;
 
     /* --- mint, bind, use --------------------------------------------------- */
-    todo_proskrnl
-    {
-        status = open_server(&s);
-        ok(status == STATUS_SUCCESS, "server open -> %08lx", (unsigned long)status);
-        status = open_reference(&console, s);
-        ok(status == STATUS_SUCCESS, "reference open -> %08lx", (unsigned long)status);
+    status = open_server(&s);
+    ok(status == STATUS_SUCCESS, "server open -> %08lx", (unsigned long)status);
+    status = open_reference(&console, s);
+    ok(status == STATUS_SUCCESS, "reference open -> %08lx", (unsigned long)status);
 
-        /* Minting still is not binding. */
-        status = open_input(&probe);
-        ok(status == STATUS_INVALID_HANDLE, "input open after mint, before bind -> %08lx",
-           (unsigned long)status);
-        close_if(probe);
-        probe = NULL;
-    }
+    /* Minting still is not binding. */
+    status = open_input(&probe);
+    ok(status == STATUS_INVALID_HANDLE, "input open after mint, before bind -> %08lx",
+       (unsigned long)status);
+    close_if(probe);
+    probe = NULL;
 
-    /* The bind-and-use half needs the minted console above. On today's
-     * kernel the mint failed (the todo block said so); guarding here keeps
-     * the null root from turning open_connection into the ABSOLUTE open,
-     * which today's kernel answers with a false green. Untagged inside: on
-     * proskrnl this runs only once the kernel mints consoles at all. */
+    /* The bind-and-use half needs the minted console above; the guard keeps
+     * a failed mint from turning open_connection's null root into the
+     * ABSOLUTE open, which would assert a different rule than the one this
+     * section is about. */
     if (console != NULL)
     {
         /* "Connection" relative to the console binds this process. */

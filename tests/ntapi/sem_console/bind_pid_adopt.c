@@ -73,20 +73,14 @@ START_TEST(bind_pid_adopt)
     /* The parent needs a console for the child to adopt: the stock
      * AllocConsole (conhost spawn and all). */
     alloced = AllocConsole();
-    todo_proskrnl
-    {
-        ok(alloced, "AllocConsole -> %lu", (unsigned long)GetLastError());
-    }
+    ok(alloced, "AllocConsole -> %lu", (unsigned long)GetLastError());
 
     int n = build_cmdline(cmdline, self, W("--bind "));
     n += emit_hex(cmdline + n, GetCurrentProcessId());
     cmdline[n] = 0;
     ok(run_child(cmdline, DETACHED_PROCESS, &code), "child ran");
-    todo_proskrnl
-    {
-        ok(code == (CHILD_BASE | BP_ALL), "child observed %04lx, expected %04x",
-           (unsigned long)code, CHILD_BASE | BP_ALL);
-    }
+    ok(code == (CHILD_BASE | BP_ALL), "child observed %04lx, expected %04x",
+       (unsigned long)code, CHILD_BASE | BP_ALL);
 
     FreeConsole();
 }

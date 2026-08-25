@@ -546,8 +546,10 @@ static void KiTestMainThread(void *context)
     KiVerifyKernelState();
 
     /* The console driver's terminate-unwind states (tests/kmt/condrv_unwind.c):
-     * it drives conhost's side of \Device\ConDrv\Server itself, so it must run
-     * BEFORE smss starts the real conhost — there is one server slot. */
+     * it drives conhost's side of \Device\ConDrv\Server itself, on a console
+     * of its own minting (M11: a Server open mints one, so the boot conhost's
+     * console is undisturbed either way; the run stays here only for log
+     * stability). */
     int condrvFailures = kmt_run_condrv();
     DbgPrint(condrvFailures == 0 ? "[KTEST] CONDRV PASS\n" : "[KTEST] CONDRV FAIL failures=%d\n",
              condrvFailures);

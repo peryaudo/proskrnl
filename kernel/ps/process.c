@@ -110,6 +110,8 @@ static void PspDeleteProcess(PVOID body)
         MiFreePool(process->imageNtPath.Buffer);
     }
     PspUnlinkProcessFromJob(process);
+    CondrvProcessDelete(process);  /* M11: a console binding the exit sweep's
+                                    * connection Cleanup did not release */
     PspDetachDebugObject(process); /* a target that exits while attached */
     PspFreeLdt(process);
     PspShutdownNoteProcessExit(process); /* idempotent: covers a process
@@ -188,7 +190,7 @@ static void PspInitializeProcessCommon(PEPROCESS process)
     process->ntdllBase = 0;
     process->activeThreadCount = 0;
     InitializeListHead(&process->threadListHead);
-    process->consoleHandle = 0;
+    process->console = 0;
     /* CUI-2: every process is born with a primary-token duplicate (the ONE
      * mint site, G11). Failure means pool exhaustion — already fatal under
      * one-pool/no-eviction (Art. 3). */
@@ -810,41 +812,60 @@ static NTSTATUS PspCreateUserProcessImage(const WCHAR *exeNtPath, const char *im
     }
     if (options->userParams)
     {
+        /* M11: the create-time half of the console subsystem gate — the
+         * console (and, without an inherit, the std handles) reach the
+         * child ONLY when the child image is CUI. ntdll's unix side is the
+         * spec (dlls/ntdll/unix/env.c create_startup_info: `info->console`
+         * filled only for IMAGE_SUBSYSTEM_WINDOWS_CUI, hstd* only under
+         * INHERIT_HANDLES or CUI-without-STARTF_USESTDHANDLES), and
+         * sem_console/subsystem_gate pins it: a GUI child gets no console
+         * even from a console-attached parent — this is what keeps GUI
+         * apps from ever spawning a conhost window. The ALLOC sentinels
+         * are negative, so `cui` gates them through the same zeroing. */
+        BOOLEAN cui =
+            exeSection->image != 0 && exeSection->image->subsystem == IMAGE_SUBSYSTEM_WINDOWS_CUI;
+        if (!cui)
+        {
+            params->header.ConsoleHandle = 0;
+        }
         /* Inherit the process console, but keep pseudo handles (< 0) and 0
          * (no console) as-is; a real handle is re-duplicated to a fresh
          * child value written back into the child's params
-         * (server/process.c). */
+         * (server/process.c). The child is NOT bound here: binding happens
+         * when it opens its Connection through the handle (stock
+         * kernelbase init_console; wineserver console_lookup_name — the
+         * one binding authority, drivers/condrv.c). */
         HANDLE consoleHandle = params->header.ConsoleHandle;
         if ((LONGLONG)(uintptr_t)consoleHandle > 0)
         {
             HANDLE duplicated = 0;
-            if (NT_SUCCESS(ObpDuplicateIntoTable(parentTable, consoleHandle, &process->handleTable,
-                                                 FALSE, &duplicated)))
-            {
-                params->header.ConsoleHandle = duplicated;
-                /* CUI-4: record the inherited console on the EPROCESS too —
-                 * `consoleHandle != 0` is what marks a process as attached to
-                 * the console, and so what the Ctrl+C fanout selects on
-                 * (PsPropagateConsoleCtrlEvent). A cmd child reaches its
-                 * console THIS way, not through the kernel-launch seeding
-                 * below, so leaving it 0 made every interactive child
-                 * invisible to console control events. */
-                process->consoleHandle = duplicated;
-            }
-            else
-            {
-                params->header.ConsoleHandle = 0;
-            }
+            params->header.ConsoleHandle =
+                NT_SUCCESS(ObpDuplicateIntoTable(parentTable, consoleHandle, &process->handleTable,
+                                                 FALSE, &duplicated))
+                    ? duplicated
+                    : 0;
         }
         if (!options->inheritHandles)
         {
             /* Not inheriting: the three std handles are still duplicated
-             * into the child, invalid ones tolerated (become 0). */
+             * into the child, invalid ones tolerated (become 0) — for a
+             * CUI child not steered by STARTF_USESTDHANDLES (0x100,
+             * third_party/wine include/winbase.h:335; the
+             * create_startup_info condition above). A GUI child gets
+             * none. */
+            /* STARTF_USESTDHANDLES (third_party/wine include/winbase.h:335) */
+            const ULONG startfUseStdHandles = 0x00000100;
+            BOOLEAN passStd = cui && (params->header.dwFlags & startfUseStdHandles) == 0;
             HANDLE *stdFields[3] = {&params->header.hStdInput, &params->header.hStdOutput,
                                     &params->header.hStdError};
             for (int i = 0; i < 3; i++)
             {
                 HANDLE value = *stdFields[i];
+                if (!passStd)
+                {
+                    *stdFields[i] = 0;
+                    continue;
+                }
                 if ((LONGLONG)(uintptr_t)value <= 0)
                 {
                     continue;
@@ -1324,6 +1345,26 @@ static PEPROCESS PspFindProcessByProcessId(uint64_t processId)
     return 0;
 }
 
+/* The exported spelling (ps.h): a REFERENCED process, or STATUS_INVALID_CID
+ * — the same engine NtOpenProcess resolves through (G11). Condrv's
+ * IOCTL_CONDRV_BIND_PID is the first out-of-department caller (M11). */
+NTSTATUS PsLookupProcessByProcessId(HANDLE processId, PEPROCESS *processOut)
+{
+    uint64_t flags = KiAcquireDispatcherLock();
+    PEPROCESS process = PspFindProcessByProcessId((uint64_t)(uintptr_t)processId);
+    if (process != 0)
+    {
+        ObfReferenceObject(process);
+    }
+    KiReleaseDispatcherLock(flags);
+    if (process == 0)
+    {
+        return STATUS_INVALID_CID;
+    }
+    *processOut = process;
+    return STATUS_SUCCESS;
+}
+
 /* The process owning a live thread id (CLIENT_ID.UniqueThread with a zero
  * UniqueProcess); lock held. */
 static PEPROCESS PspFindProcessByThreadId(uint64_t threadId)
@@ -1379,12 +1420,14 @@ void PspFlagThreadTermination(PKTHREAD tcb, NTSTATUS exitStatus)
  * RtlExitUserProcess(STATUS_CONTROL_C_EXIT). No APC can serve this: a user APC
  * only runs at an alertable wait, so it could never interrupt a busy loop.
  *
- * Attachment is `consoleHandle != 0` — proskrnl has ONE global console
- * (docs/03 M9), so a process either has its handles or it does not. */
+ * Attachment is `process->console == console` (M11): the binding
+ * drivers/condrv.c maintains selects, per console, exactly the processes
+ * wineserver's propagate_console_signal would walk. */
 #define PSP_MAX_CTRL_TARGETS 32
 
-NTSTATUS PsPropagateConsoleCtrlEvent(ULONG event, uint64_t groupId)
+NTSTATUS PsPropagateConsoleCtrlEvent(struct CONDRV_CONSOLE *console, ULONG event, uint64_t groupId)
 {
+    ASSERT(console != 0);
     if (event != CTRL_C_EVENT && event != CTRL_BREAK_EVENT)
     {
         /* The other CTRL_* codes have no wineserver delivery either
@@ -1403,9 +1446,9 @@ NTSTATUS PsPropagateConsoleCtrlEvent(ULONG event, uint64_t groupId)
          entry != &PspActiveProcessListHead && count < PSP_MAX_CTRL_TARGETS; entry = entry->Flink)
     {
         PEPROCESS process = CONTAINING_RECORD(entry, EPROCESS, activeProcessLinks);
-        if (process->consoleHandle == 0 || process->ctrlRoutine == 0)
+        if (process->console != console || process->ctrlRoutine == 0)
         {
-            continue; /* not on the console, or no ntdll to deliver through */
+            continue; /* not on this console, or no ntdll to deliver through */
         }
         if (process->header.signalState != 0 || process->activeThreadCount == 0)
         {

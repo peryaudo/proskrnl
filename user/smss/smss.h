@@ -76,6 +76,11 @@ int SmssIsShellBoot(void);
 /* Does this boot keep its console on the serial transport? (`Serial`) */
 int SmssIsSerialBoot(void);
 
+/* Does the BOOT console put up a window, or take the serial tty?
+ * (= Gui && !Serial; user/smss/smss.c — the launch.c conhost spawn reads
+ * it to pick the boot conhost's command line.) */
+int SmssConsoleWantsWindow(void);
+
 /* Publish SmssIsShellBoot's answer for the PE side (the desktop server and
  * winefb.drv). Call before any win32u client starts. */
 void SmssPublishShellBoot(void);

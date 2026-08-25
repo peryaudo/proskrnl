@@ -43,20 +43,14 @@ START_TEST(inherit_console)
     ok(GetModuleFileNameW(NULL, self, 512) != 0, "GetModuleFileNameW");
     FreeConsole();
     alloced = AllocConsole();
-    todo_proskrnl
-    {
-        ok(alloced, "AllocConsole -> %lu", (unsigned long)GetLastError());
-    }
+    ok(alloced, "AllocConsole -> %lu", (unsigned long)GetLastError());
 
     /* Default flags: the child inherits the parent's ConsoleHandle (no
      * sentinel is minted — dlls/kernelbase/process.c's else-branch). */
     build_cmdline(cmdline, self, W("--con-child"));
     ok(run_child(cmdline, 0, &code), "child ran");
-    todo_proskrnl
-    {
-        ok(code == (CHILD_BASE | IC_ALL), "child observed %04lx, expected %04x",
-           (unsigned long)code, CHILD_BASE | IC_ALL);
-    }
+    ok(code == (CHILD_BASE | IC_ALL), "child observed %04lx, expected %04x",
+       (unsigned long)code, CHILD_BASE | IC_ALL);
 
     FreeConsole();
 }

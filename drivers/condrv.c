@@ -48,8 +48,10 @@
 
 /* ASCII ETX — what a terminal sends for Ctrl+C (the byte a Unix tty's VINTR
  * defaults to). CUI-4 treats it as a signal on the RX path; see
- * CondrvSerialRead. */
+ * CondrvSerialRead. Routed to the console whose conhost is doing this tty
+ * read (defined with the console machinery below). */
 #define CONDRV_SERIAL_INTR 0x03
+static void CondrvSerialInterrupt(void);
 
 /* One global open context: the device is stateless per-open (conhost is the
  * only intended opener) but the Io close hooks key off a non-NULL fsContext
@@ -144,7 +146,7 @@ static NTSTATUS CondrvSerialRead(PFILE_OBJECT file, void *buffer, ULONG length, 
         }
         if (interrupt)
         {
-            PsPropagateConsoleCtrlEvent(CTRL_C_EVENT, 0);
+            CondrvSerialInterrupt();
         }
         if (got != 0)
         {
@@ -196,21 +198,42 @@ static const IO_VFS_OPS CondrvSerialOps = {
     .Write = CondrvSerialWrite,
 };
 
-/* --- \Device\ConDrv: the console object -------------------------------------- */
+/* --- \Device\ConDrv: per-client consoles -------------------------------------- */
+
+/* The object model is wineserver's (third_party/wine server/console.c), one
+ * struct per console rather than one static: a Server open MINTS a console
+ * server; "Reference" relative to it mints THE console, once
+ * (console_server_lookup_name); "Connection" relative to the console BINDS
+ * the opening process (console_lookup_name); Input/Output opens and their
+ * I/O resolve the CALLER's binding at call time, never a captured pointer
+ * (console_input_ioctl and friends read current->process->console). The
+ * binding itself lives on the EPROCESS (`process->console`, the wineserver
+ * field of the same name) so the Ctrl+C fanout and the create-path fixups
+ * see the same authority (Art. 11). Pinned by tests/ntapi/sem_console/. */
 
 typedef enum
 {
     CondrvOpenServer,
-    CondrvOpenConnection, /* also Reference: both name the console itself */
+    CondrvOpenConsole, /* "Reference": the console object itself */
+    CondrvOpenConnection,
     CondrvOpenInput,
-    CondrvOpenOutput,
+    CondrvOpenOutput, /* Output; also ScreenBuffer (outputId > 1) */
 } CONDRV_OPEN_KIND;
+
+typedef struct CONDRV_CONSOLE CONDRV_CONSOLE, *PCONDRV_CONSOLE;
 
 typedef struct CONDRV_OPEN
 {
     CONDRV_OPEN_KIND kind;
-    ULONG outputId; /* screen-buffer id (kind == Output); 1 = conhost's
-                     * pre-created default buffer */
+    ULONG outputId;          /* screen-buffer id (kind == Output); 1 = conhost's
+                              * pre-created default buffer */
+    PCONDRV_CONSOLE console; /* counted. Server: the minted console;
+                              * Console: the referenced console;
+                              * ScreenBuffer: the console the id was minted
+                              * on (its CLOSE_OUTPUT must reach that conhost
+                              * even after the closer unbinds). Input/Output/
+                              * Connection carry NONE — their routing is the
+                              * caller's binding, resolved per call. */
 } CONDRV_OPEN, *PCONDRV_OPEN;
 
 /* One in-flight client verb. Lives on the REQUESTER's kernel stack — the
@@ -239,9 +262,27 @@ static BOOLEAN CondrvIsBlockingReadCode(ULONG code)
            code == IOCTL_CONDRV_READ_CONSOLE_CONTROL || code == IOCTL_CONDRV_READ_FILE;
 }
 
-static struct
+struct CONDRV_CONSOLE
 {
-    PFILE_OBJECT serverFile; /* conhost's Server open; 0 = no console */
+    LIST_ENTRY listEntry; /* CondrvConsoleList (serial-^C routing) */
+    /* G11 ownership audit — who holds refCount: the Server open, every
+     * Console-kind open (Reference handles, the create-fixup duplicates
+     * included — they share the FILE_OBJECT), every ScreenBuffer open, and
+     * every bound EPROCESS. clientCount is the subset that means "someone
+     * is still using this console": everything above except the Server
+     * open itself. In-flight CONDRV_REQUESTs hold neither — each lives on
+     * its requester's stack, and the requester's own open or binding pins
+     * the console for the duration of CondrvForward. */
+    LONG refCount;
+    LONG clientCount;
+    BOOLEAN referenceMinted; /* one console per server (wineserver
+                              * console_server_lookup_name's INVALID_HANDLE) */
+    PFILE_OBJECT serverFile; /* conhost's Server open; 0 = conhost gone */
+    PEPROCESS serverProcess; /* the process last PUMPING the server (its
+                              * conhost — the opener may be smss, whose
+                              * child inherited the handle; refreshed at
+                              * every server read). Serial-^C routing keys
+                              * off it. Weak, cleared with serverFile. */
     LIST_ENTRY requestQueue; /* queued, not yet fetched by conhost */
     LIST_ENTRY readQueue;    /* head = the delivered blocking read awaiting
                               * read_complete; tail = reads deferred behind
@@ -249,19 +290,69 @@ static struct
     PCONDRV_REQUEST current; /* delivered non-read verb, awaiting its reply */
     uint64_t nextRequestId;
     ULONG nextOutputId; /* fresh screen-buffer ids (2+) */
-} CondrvConsole;
+};
+
+static LIST_ENTRY CondrvConsoleList;
 
 static IO_FCB CondrvConsoleFcb;
 
-/* The server file object doubles as conhost's wait handle: signaled while
- * requests are queued (its DISPATCHER_HEADER is event-shaped — io.h). */
-static void CondrvSignalServer(BOOLEAN pending)
+static void CondrvReferenceConsole(PCONDRV_CONSOLE console)
 {
-    if (CondrvConsole.serverFile == 0)
+    console->refCount++;
+}
+
+static void CondrvReleaseConsole(PCONDRV_CONSOLE console)
+{
+    ASSERT(console->refCount > 0);
+    if (--console->refCount != 0)
     {
         return;
     }
-    PKEVENT event = (PKEVENT)&CondrvConsole.serverFile->header;
+    ASSERT(console->clientCount == 0);
+    ASSERT(console->current == 0);
+    ASSERT(IsListEmpty(&console->requestQueue));
+    ASSERT(IsListEmpty(&console->readQueue));
+    RemoveEntryList(&console->listEntry);
+    MiFreePool(console);
+}
+
+/* The caller's console binding — wineserver's `current->process->console`,
+ * which every Input/Output open and I/O resolves at CALL time. */
+static PCONDRV_CONSOLE CondrvCallerConsole(void)
+{
+    return KeGetCurrentThread()->process->console;
+}
+
+/* A ^C on the serial wire (HACK-004) belongs to the console whose conhost
+ * is doing this tty read: the reading thread IS that conhost's input
+ * thread, so its process names the console without scanning any handle
+ * table. No match (a stray ^C with no serial conhost) is dropped loudly
+ * (Art. 12). */
+static void CondrvSerialInterrupt(void)
+{
+    PEPROCESS reader = KeGetCurrentThread()->process;
+    for (PLIST_ENTRY entry = CondrvConsoleList.Flink; entry != &CondrvConsoleList;
+         entry = entry->Flink)
+    {
+        PCONDRV_CONSOLE console = CONTAINING_RECORD(entry, CONDRV_CONSOLE, listEntry);
+        if (console->serverProcess == reader)
+        {
+            PsPropagateConsoleCtrlEvent(console, CTRL_C_EVENT, 0);
+            return;
+        }
+    }
+    DbgPrint("condrv: serial ^C with no console server reading the tty; dropped\n");
+}
+
+/* The server file object doubles as conhost's wait handle: signaled while
+ * requests are queued (its DISPATCHER_HEADER is event-shaped — io.h). */
+static void CondrvSignalServer(PCONDRV_CONSOLE console, BOOLEAN pending)
+{
+    if (console->serverFile == 0)
+    {
+        return;
+    }
+    PKEVENT event = (PKEVENT)&console->serverFile->header;
     if (pending)
     {
         KeSetEvent(event, 0, FALSE);
@@ -272,11 +363,63 @@ static void CondrvSignalServer(BOOLEAN pending)
     }
 }
 
-/* Package one client verb, queue it, wake conhost, park until the reply. */
-static NTSTATUS CondrvForward(ULONG code, ULONG output, const void *input, ULONG inputLength,
-                              void *outputBuffer, ULONG outputCapacity, ULONG_PTR *infoOut)
+/* One client (a Console/ScreenBuffer open, or a process binding) is gone.
+ * When the LAST one goes, wake conhost: its next Server read answers
+ * STATUS_INVALID_HANDLE (wineserver's get_next_console_request answer once
+ * the console is gone), which is how conhost learns to exit — the boot
+ * conhost never sees it because smss holds its Reference handle forever. */
+static void CondrvClientGone(PCONDRV_CONSOLE console)
 {
-    if (CondrvConsole.serverFile == 0)
+    ASSERT(console->clientCount > 0);
+    if (--console->clientCount == 0)
+    {
+        CondrvSignalServer(console, TRUE);
+    }
+    CondrvReleaseConsole(console);
+}
+
+/* Bind `process` to `console` — the ONE writer of process->console
+ * (wineserver console_lookup_name / console_connection_ioctl; Art. 11).
+ * The caller has checked the process is unbound. */
+static void CondrvBindProcess(PEPROCESS process, PCONDRV_CONSOLE console)
+{
+    ASSERT(process->console == 0);
+    CondrvReferenceConsole(console);
+    console->clientCount++;
+    process->console = console;
+}
+
+/* Unbind `process` from whatever console it is bound to (wineserver
+ * console_connection_close_handle; idempotent — the process-delete fallback
+ * runs after the handle sweep already unbound through the connection's
+ * Cleanup). */
+static void CondrvUnbindProcess(PEPROCESS process)
+{
+    PCONDRV_CONSOLE console = process->console;
+    if (console == 0)
+    {
+        return;
+    }
+    process->console = 0;
+    CondrvClientGone(console);
+}
+
+/* The process-delete fallback (kernel/ps/process.c PspDeleteProcess): a
+ * binding normally drops at the connection handle's Cleanup during the
+ * exit sweep, but a connection handle duplicated into another process
+ * outlives the binder's sweep — this keeps the EPROCESS reference audit
+ * balanced regardless. */
+void CondrvProcessDelete(PEPROCESS process)
+{
+    CondrvUnbindProcess(process);
+}
+
+/* Package one client verb, queue it, wake conhost, park until the reply. */
+static NTSTATUS CondrvForward(PCONDRV_CONSOLE console, ULONG code, ULONG output, const void *input,
+                              ULONG inputLength, void *outputBuffer, ULONG outputCapacity,
+                              ULONG_PTR *infoOut)
+{
+    if (console->serverFile == 0)
     {
         return STATUS_INVALID_DEVICE_STATE; /* no conhost: fail fast, never hang */
     }
@@ -290,7 +433,7 @@ static NTSTATUS CondrvForward(ULONG code, ULONG output, const void *input, ULONG
     }
 
     CONDRV_REQUEST request;
-    request.id = ++CondrvConsole.nextRequestId;
+    request.id = ++console->nextRequestId;
     request.code = code;
     request.output = output;
     request.input = input;
@@ -301,8 +444,8 @@ static NTSTATUS CondrvForward(ULONG code, ULONG output, const void *input, ULONG
     request.information = 0;
     KeInitializeEvent(&request.done, NotificationEvent, FALSE);
 
-    InsertTailList(&CondrvConsole.requestQueue, &request.listEntry);
-    CondrvSignalServer(TRUE);
+    InsertTailList(&console->requestQueue, &request.listEntry);
+    CondrvSignalServer(console, TRUE);
     NTSTATUS waitStatus = KeWaitForSingleObject(&request.done, Executive, KernelMode, FALSE, 0);
     if (waitStatus != STATUS_SUCCESS)
     {
@@ -331,9 +474,9 @@ static NTSTATUS CondrvForward(ULONG code, ULONG output, const void *input, ULONG
         {
             /* completed: unlinked and unowned already */
         }
-        else if (CondrvConsole.current == &request)
+        else if (console->current == &request)
         {
-            CondrvConsole.current = 0;
+            console->current = 0;
         }
         else
         {
@@ -372,46 +515,60 @@ static void CondrvCompleteRequest(PCONDRV_REQUEST request, NTSTATUS status, cons
  * wineserver: a fetched blocking read parks on readQueue (completed only
  * by read_complete); later reads defer behind it; other verbs are "busy"
  * until the plain reply. */
-static NTSTATUS CondrvServerRead(void *buffer, ULONG length, ULONG_PTR *infoOut)
+static NTSTATUS CondrvServerRead(PCONDRV_CONSOLE console, void *buffer, ULONG length,
+                                 ULONG_PTR *infoOut)
 {
-    if (CondrvConsole.current != 0)
+    if (console->current != 0)
     {
         return STATUS_INVALID_DEVICE_STATE; /* reply before fetching again */
+    }
+    /* Whoever pumps the server IS this console's conhost — the opener may
+     * have been smss, whose spawned child inherited the handle. */
+    console->serverProcess = KeGetCurrentThread()->process;
+
+    /* The console's last client is gone: answer the fetch the way
+     * wineserver's get_next_console_request answers a server whose console
+     * has been destroyed — conhost's process_console_ioctls returns on it
+     * and conhost exits. Queued work cannot exist here (every request is
+     * pinned by a live client). */
+    if (console->referenceMinted && console->clientCount == 0)
+    {
+        return STATUS_INVALID_HANDLE;
     }
 
     /* wineserver's move-aside: while a read is outstanding, queued reads
      * shift to the read queue (order kept) so non-reads can flow. */
-    if (!IsListEmpty(&CondrvConsole.readQueue) && !IsListEmpty(&CondrvConsole.requestQueue))
+    if (!IsListEmpty(&console->readQueue) && !IsListEmpty(&console->requestQueue))
     {
         PCONDRV_REQUEST head =
-            CONTAINING_RECORD(CondrvConsole.requestQueue.Flink, CONDRV_REQUEST, listEntry);
+            CONTAINING_RECORD(console->requestQueue.Flink, CONDRV_REQUEST, listEntry);
         if (CondrvIsBlockingReadCode(head->code))
         {
-            PLIST_ENTRY entry = CondrvConsole.requestQueue.Flink;
-            while (entry != &CondrvConsole.requestQueue)
+            PLIST_ENTRY entry = console->requestQueue.Flink;
+            while (entry != &console->requestQueue)
             {
                 PLIST_ENTRY next = entry->Flink;
                 PCONDRV_REQUEST request = CONTAINING_RECORD(entry, CONDRV_REQUEST, listEntry);
                 if (CondrvIsBlockingReadCode(request->code))
                 {
                     RemoveEntryList(entry);
-                    InsertTailList(&CondrvConsole.readQueue, entry);
+                    InsertTailList(&console->readQueue, entry);
                 }
                 entry = next;
             }
         }
     }
 
-    if (IsListEmpty(&CondrvConsole.requestQueue))
+    if (IsListEmpty(&console->requestQueue))
     {
-        CondrvSignalServer(FALSE);
+        CondrvSignalServer(console, FALSE);
         return STATUS_PENDING;
     }
-    PLIST_ENTRY entry = RemoveHeadList(&CondrvConsole.requestQueue);
+    PLIST_ENTRY entry = RemoveHeadList(&console->requestQueue);
     PCONDRV_REQUEST request = CONTAINING_RECORD(entry, CONDRV_REQUEST, listEntry);
-    if (IsListEmpty(&CondrvConsole.requestQueue))
+    if (IsListEmpty(&console->requestQueue))
     {
-        CondrvSignalServer(FALSE);
+        CondrvSignalServer(console, FALSE);
     }
 
     ULONG total = (ULONG)sizeof(CONDRV_SERVER_MSG) + request->inputLength;
@@ -419,19 +576,19 @@ static NTSTATUS CondrvServerRead(void *buffer, ULONG length, ULONG_PTR *infoOut)
     {
         /* The glue always offers the full protocol buffer; re-queue and
          * refuse rather than truncating. */
-        InsertHeadList(&CondrvConsole.requestQueue, entry);
-        CondrvSignalServer(TRUE);
+        InsertHeadList(&console->requestQueue, entry);
+        CondrvSignalServer(console, TRUE);
         return STATUS_INVALID_BUFFER_SIZE;
     }
 
     if (CondrvIsBlockingReadCode(request->code))
     {
-        ASSERT(IsListEmpty(&CondrvConsole.readQueue));
-        InsertTailList(&CondrvConsole.readQueue, entry);
+        ASSERT(IsListEmpty(&console->readQueue));
+        InsertTailList(&console->readQueue, entry);
     }
     else
     {
-        CondrvConsole.current = request;
+        console->current = request;
     }
 
     CONDRV_SERVER_MSG *message = buffer;
@@ -452,7 +609,8 @@ static NTSTATUS CondrvServerRead(void *buffer, ULONG length, ULONG_PTR *infoOut)
  * (read_complete); read == 0 completes the busy verb — and is silently
  * ignored when there is none, exactly like wineserver ignores the loop
  * reply that follows a read delivery. */
-static NTSTATUS CondrvServerWrite(const void *buffer, ULONG length, ULONG_PTR *infoOut)
+static NTSTATUS CondrvServerWrite(PCONDRV_CONSOLE console, const void *buffer, ULONG length,
+                                  ULONG_PTR *infoOut)
 {
     if (length < sizeof(CONDRV_SERVER_REPLY))
     {
@@ -471,37 +629,37 @@ static NTSTATUS CondrvServerWrite(const void *buffer, ULONG length, ULONG_PTR *i
 
     if (reply->read != 0)
     {
-        if (IsListEmpty(&CondrvConsole.readQueue))
+        if (IsListEmpty(&console->readQueue))
         {
             /* conhost's signal-only read_complete; it tolerates exactly
              * this status (wineserver answers the same). */
             return STATUS_INVALID_HANDLE;
         }
-        PLIST_ENTRY entry = RemoveHeadList(&CondrvConsole.readQueue);
+        PLIST_ENTRY entry = RemoveHeadList(&console->readQueue);
         PCONDRV_REQUEST request = CONTAINING_RECORD(entry, CONDRV_REQUEST, listEntry);
         CondrvCompleteRequest(request, status, reply + 1, reply->outSize);
         /* Deferred reads become deliverable again (wineserver moves the
          * read queue back after a completion). */
-        while (!IsListEmpty(&CondrvConsole.readQueue))
+        while (!IsListEmpty(&console->readQueue))
         {
-            InsertTailList(&CondrvConsole.requestQueue, RemoveHeadList(&CondrvConsole.readQueue));
+            InsertTailList(&console->requestQueue, RemoveHeadList(&console->readQueue));
         }
-        if (!IsListEmpty(&CondrvConsole.requestQueue))
+        if (!IsListEmpty(&console->requestQueue))
         {
-            CondrvSignalServer(TRUE);
+            CondrvSignalServer(console, TRUE);
         }
         *infoOut = length;
         return STATUS_SUCCESS;
     }
 
-    PCONDRV_REQUEST request = CondrvConsole.current;
+    PCONDRV_REQUEST request = console->current;
     if (request != 0)
     {
         if (request->id != reply->id)
         {
             return STATUS_INVALID_PARAMETER;
         }
-        CondrvConsole.current = 0;
+        console->current = 0;
         CondrvCompleteRequest(request, status, reply + 1, reply->outSize);
     }
     *infoOut = length;
@@ -509,24 +667,27 @@ static NTSTATUS CondrvServerWrite(const void *buffer, ULONG length, ULONG_PTR *i
 }
 
 /* Server teardown: every queued, busy, and parked-read request fails — a
- * dead conhost degrades the console, it never deadlocks a client. */
-static void CondrvServerGone(void)
+ * dead conhost degrades ITS console, it never deadlocks a client. The
+ * console object itself lives on while clients hold references; their
+ * later verbs fail fast at CondrvForward's serverFile check. */
+static void CondrvServerGone(PCONDRV_CONSOLE console)
 {
-    CondrvConsole.serverFile = 0;
-    if (CondrvConsole.current != 0)
+    console->serverFile = 0;
+    console->serverProcess = 0;
+    if (console->current != 0)
     {
-        CondrvCompleteRequest(CondrvConsole.current, STATUS_INVALID_DEVICE_STATE, 0, 0);
-        CondrvConsole.current = 0;
+        CondrvCompleteRequest(console->current, STATUS_INVALID_DEVICE_STATE, 0, 0);
+        console->current = 0;
     }
-    while (!IsListEmpty(&CondrvConsole.readQueue))
+    while (!IsListEmpty(&console->readQueue))
     {
-        PLIST_ENTRY entry = RemoveHeadList(&CondrvConsole.readQueue);
+        PLIST_ENTRY entry = RemoveHeadList(&console->readQueue);
         CondrvCompleteRequest(CONTAINING_RECORD(entry, CONDRV_REQUEST, listEntry),
                               STATUS_INVALID_DEVICE_STATE, 0, 0);
     }
-    while (!IsListEmpty(&CondrvConsole.requestQueue))
+    while (!IsListEmpty(&console->requestQueue))
     {
-        PLIST_ENTRY entry = RemoveHeadList(&CondrvConsole.requestQueue);
+        PLIST_ENTRY entry = RemoveHeadList(&console->requestQueue);
         CondrvCompleteRequest(CONTAINING_RECORD(entry, CONDRV_REQUEST, listEntry),
                               STATUS_INVALID_DEVICE_STATE, 0, 0);
     }
@@ -534,6 +695,25 @@ static void CondrvServerGone(void)
 
 /* --- ConDrv vfs ops ---------------------------------------------------------- */
 
+/* Name equality against a device-relative component. */
+static BOOLEAN CondrvNameIs(const UNICODE_STRING *path, const WCHAR *name)
+{
+    UNICODE_STRING expected;
+    RtlInitUnicodeString(&expected, name);
+    return RtlEqualUnicodeString(path, &expected, TRUE);
+}
+
+/* The open/binding rules, one arm per wineserver lookup (server/console.c):
+ *
+ *   \Device\ConDrv\Server              mint a console server
+ *   "Reference"  rel. Server           mint THE console, once
+ *   "Reference"  rel. Connection       the caller's bound console
+ *   "Connection" rel. Console          bind the caller (unbound callers only)
+ *   \Device\ConDrv\Connection          connection, no bind (unbound callers only)
+ *   \Device\ConDrv\Input|Output        caller must be bound; routed per call
+ *   \Device\ConDrv\ScreenBuffer        new buffer on the caller's console
+ *
+ * Pinned by tests/ntapi/sem_console/ against the real wineserver. */
 static NTSTATUS CondrvConsoleCreate(PIO_DEVICE device, PFILE_OBJECT file,
                                     const UNICODE_STRING *path, PFILE_OBJECT relativeTo,
                                     ACCESS_MASK grantedAccess, ULONG shareAccess,
@@ -541,75 +721,154 @@ static NTSTATUS CondrvConsoleCreate(PIO_DEVICE device, PFILE_OBJECT file,
                                     ULONG_PTR *information)
 {
     (void)device;
-    (void)relativeTo; /* a relative open (root = any console handle) names
-                       * the same single console */
     (void)grantedAccess;
     (void)shareAccess;
     (void)fileAttributes;
     (void)disposition; /* kernelbase opens Input/Output with FILE_CREATE */
     (void)options;
 
-    UNICODE_STRING name;
+    PCONDRV_OPEN rootOpen =
+        (relativeTo != 0 && relativeTo->fcb == &CondrvConsoleFcb) ? relativeTo->fsContext : 0;
+    PEPROCESS process = KeGetCurrentThread()->process;
+
     CONDRV_OPEN_KIND kind;
-    BOOLEAN isScreenBuffer = FALSE;
-    RtlInitUnicodeString(&name, WSTR("Server"));
-    if (RtlEqualUnicodeString(path, &name, TRUE))
+    PCONDRV_CONSOLE console = 0; /* the counted pointer the open will carry */
+    PCONDRV_CONSOLE mint = 0;    /* Server open: the console minted below */
+    BOOLEAN bindCaller = FALSE;
+    ULONG outputId = 0;
+
+    if (rootOpen == 0 && CondrvNameIs(path, WSTR("Server")))
     {
+        /* Every Server open mints its own console server (wineserver
+         * create_console_server — an unconditional mint; sem_console/
+         * server_multi is the pin that retired the one-server refusal). */
+        mint = MiAllocatePool(sizeof(CONDRV_CONSOLE));
+        if (mint == 0)
+        {
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+        memset(mint, 0, sizeof(*mint));
+        InitializeListHead(&mint->requestQueue);
+        InitializeListHead(&mint->readQueue);
+        mint->nextOutputId = 1; /* id 1 = conhost's pre-created buffer */
+        mint->refCount = 1;     /* the server open's */
+        mint->serverFile = file;
+        mint->serverProcess = process;
+        InsertTailList(&CondrvConsoleList, &mint->listEntry);
         kind = CondrvOpenServer;
+        console = mint;
     }
-    else if ((RtlInitUnicodeString(&name, WSTR("Connection")),
-              RtlEqualUnicodeString(path, &name, TRUE)) ||
-             (RtlInitUnicodeString(&name, WSTR("Reference")),
-              RtlEqualUnicodeString(path, &name, TRUE)))
+    else if (rootOpen != 0 && rootOpen->kind == CondrvOpenServer &&
+             CondrvNameIs(path, WSTR("Reference")))
     {
+        /* Mint THE console for that server, once (console_server_lookup_name:
+         * a second Reference answers STATUS_INVALID_HANDLE). Minting is NOT
+         * binding — the opener stays unbound. */
+        if (rootOpen->console->referenceMinted)
+        {
+            return STATUS_INVALID_HANDLE;
+        }
+        rootOpen->console->referenceMinted = TRUE;
+        kind = CondrvOpenConsole;
+        console = rootOpen->console;
+        CondrvReferenceConsole(console);
+        console->clientCount++;
+    }
+    else if (rootOpen != 0 && rootOpen->kind == CondrvOpenConnection &&
+             CondrvNameIs(path, WSTR("Reference")))
+    {
+        /* The caller's bound console (console_connection_lookup_name). */
+        if (process->console == 0)
+        {
+            return STATUS_INVALID_HANDLE;
+        }
+        kind = CondrvOpenConsole;
+        console = process->console;
+        CondrvReferenceConsole(console);
+        console->clientCount++;
+    }
+    else if ((rootOpen == 0 || rootOpen->kind == CondrvOpenConsole) &&
+             CondrvNameIs(path, WSTR("Connection")))
+    {
+        /* A connection: relative to a console it BINDS the caller
+         * (console_lookup_name); absolute it binds nothing. Either way an
+         * already-bound caller refuses (create_console_connection's
+         * ACCESS_DENIED arm). */
+        if (process->console != 0)
+        {
+            return STATUS_ACCESS_DENIED;
+        }
         kind = CondrvOpenConnection;
+        bindCaller = rootOpen != 0;
     }
-    else if ((RtlInitUnicodeString(&name, WSTR("Input")), RtlEqualUnicodeString(path, &name, TRUE)))
+    else if (rootOpen == 0 && CondrvNameIs(path, WSTR("Input")))
     {
+        /* Caller-bound opens: refuse while unbound
+         * (console_device_lookup_name), capture nothing — every read and
+         * ioctl re-resolves the binding. */
+        if (process->console == 0)
+        {
+            return STATUS_INVALID_HANDLE;
+        }
         kind = CondrvOpenInput;
     }
-    else if ((RtlInitUnicodeString(&name, WSTR("Output")),
-              RtlEqualUnicodeString(path, &name, TRUE)))
+    else if (rootOpen == 0 && CondrvNameIs(path, WSTR("Output")))
     {
+        if (process->console == 0)
+        {
+            return STATUS_INVALID_HANDLE;
+        }
         kind = CondrvOpenOutput;
+        outputId = 1;
     }
-    else if ((RtlInitUnicodeString(&name, WSTR("ScreenBuffer")),
-              RtlEqualUnicodeString(path, &name, TRUE)))
+    else if (rootOpen == 0 && CondrvNameIs(path, WSTR("ScreenBuffer")))
     {
+        /* A fresh screen buffer on the CALLER's console: mint the id there
+         * and have its conhost create it (INIT_OUTPUT) before the open
+         * returns. The open keeps a counted console pointer — its
+         * CLOSE_OUTPUT at cleanup must reach that conhost even if the
+         * closer has since unbound (wineserver's screen_buffer->input). */
+        if (process->console == 0)
+        {
+            return STATUS_INVALID_HANDLE;
+        }
+        console = process->console;
+        outputId = ++console->nextOutputId;
+        ULONG_PTR ignored = 0;
+        NTSTATUS status =
+            CondrvForward(console, IOCTL_CONDRV_INIT_OUTPUT, outputId, 0, 0, 0, 0, &ignored);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
         kind = CondrvOpenOutput;
-        isScreenBuffer = TRUE;
+        CondrvReferenceConsole(console);
+        console->clientCount++;
     }
     else
     {
         return STATUS_OBJECT_NAME_NOT_FOUND;
     }
 
-    if (kind == CondrvOpenServer && CondrvConsole.serverFile != 0)
-    {
-        return STATUS_ACCESS_DENIED; /* one console server */
-    }
-
     PCONDRV_OPEN open = MiAllocatePool(sizeof(CONDRV_OPEN));
     if (open == 0)
     {
+        if (mint != 0)
+        {
+            CondrvReleaseConsole(mint);
+        }
+        else if (console != 0)
+        {
+            CondrvClientGone(console);
+        }
         return STATUS_INSUFFICIENT_RESOURCES;
     }
     open->kind = kind;
-    open->outputId = kind == CondrvOpenOutput ? 1 : 0;
-
-    if (isScreenBuffer)
+    open->outputId = outputId;
+    open->console = console;
+    if (bindCaller)
     {
-        /* A fresh screen buffer: allocate an id and have conhost create it
-         * (its INIT_OUTPUT path) before the open returns. */
-        open->outputId = ++CondrvConsole.nextOutputId;
-        ULONG_PTR ignored = 0;
-        NTSTATUS status =
-            CondrvForward(IOCTL_CONDRV_INIT_OUTPUT, open->outputId, 0, 0, 0, 0, &ignored);
-        if (!NT_SUCCESS(status))
-        {
-            MiFreePool(open);
-            return status;
-        }
+        CondrvBindProcess(process, rootOpen->console);
     }
 
     file->fsContext = open;
@@ -625,7 +884,6 @@ static NTSTATUS CondrvConsoleCreate(PIO_DEVICE device, PFILE_OBJECT file,
     file->deviceManagedSignal = TRUE;
     if (kind == CondrvOpenServer)
     {
-        CondrvConsole.serverFile = file;
         /* Born signaled (io.h); the server handle signals "requests
          * pending", so start clear. */
         KeClearEvent((PKEVENT)&file->header);
@@ -638,20 +896,50 @@ static NTSTATUS CondrvConsoleCreate(PIO_DEVICE device, PFILE_OBJECT file,
 static void CondrvConsoleCleanup(PFILE_OBJECT file)
 {
     PCONDRV_OPEN open = file->fsContext;
-    if (open->kind == CondrvOpenServer && CondrvConsole.serverFile == file)
+    switch (open->kind)
     {
-        CondrvServerGone();
-    }
-    else if (open->kind == CondrvOpenOutput && open->outputId > 1 && CondrvConsole.serverFile != 0)
-    {
-        ULONG_PTR ignored = 0;
-        CondrvForward(IOCTL_CONDRV_CLOSE_OUTPUT, open->outputId, 0, 0, 0, 0, &ignored);
+    case CondrvOpenServer:
+        if (open->console->serverFile == file)
+        {
+            CondrvServerGone(open->console);
+        }
+        break;
+    case CondrvOpenConsole:
+        CondrvClientGone(open->console);
+        open->console = 0; /* the client count carried the reference */
+        break;
+    case CondrvOpenConnection:
+        /* Closing a connection handle unbinds the CLOSING process from
+         * whatever console it is bound to
+         * (console_connection_close_handle) — both NtClose and the exit
+         * sweep run in the closing process's own context. */
+        CondrvUnbindProcess(KeGetCurrentThread()->process);
+        break;
+    case CondrvOpenOutput:
+        if (open->outputId > 1)
+        {
+            ULONG_PTR ignored = 0;
+            CondrvForward(open->console, IOCTL_CONDRV_CLOSE_OUTPUT, open->outputId, 0, 0, 0, 0,
+                          &ignored);
+            CondrvClientGone(open->console);
+            open->console = 0;
+        }
+        break;
+    default:
+        break;
     }
 }
 
 static void CondrvConsoleClose(PFILE_OBJECT file)
 {
-    MiFreePool(file->fsContext);
+    PCONDRV_OPEN open = file->fsContext;
+    if (open->console != 0)
+    {
+        /* The Server open's own reference (client opens dropped theirs at
+         * Cleanup, through the client count). */
+        CondrvReleaseConsole(open->console);
+    }
+    MiFreePool(open);
 }
 
 static NTSTATUS CondrvConsoleGetInfo(PFILE_OBJECT file, IO_FILE_INFO *info)
@@ -681,11 +969,20 @@ static NTSTATUS CondrvConsoleRead(PFILE_OBJECT file, void *buffer, ULONG length,
     switch (open->kind)
     {
     case CondrvOpenServer:
-        return CondrvServerRead(buffer, length, infoOut);
+        return CondrvServerRead(open->console, buffer, length, infoOut);
     case CondrvOpenInput:
+    {
         /* ReadFile on a console handle: kernelbase's fallback path — the
-         * same cooked read the console server implements as READ_FILE. */
-        return CondrvForward(IOCTL_CONDRV_READ_FILE, 0, 0, 0, buffer, length, infoOut);
+         * same cooked read the console server implements as READ_FILE.
+         * Routed through the caller's CURRENT binding, not anything the
+         * open captured (wineserver console_input_read). */
+        PCONDRV_CONSOLE console = CondrvCallerConsole();
+        if (console == 0)
+        {
+            return STATUS_INVALID_HANDLE;
+        }
+        return CondrvForward(console, IOCTL_CONDRV_READ_FILE, 0, 0, 0, buffer, length, infoOut);
+    }
     default:
         return STATUS_INVALID_DEVICE_REQUEST;
     }
@@ -699,11 +996,18 @@ static NTSTATUS CondrvConsoleWrite(PFILE_OBJECT file, const void *buffer, ULONG 
     switch (open->kind)
     {
     case CondrvOpenServer:
-        return CondrvServerWrite(buffer, length, infoOut);
+        return CondrvServerWrite(open->console, buffer, length, infoOut);
     case CondrvOpenOutput:
     {
         /* WriteFile on a console handle -> WRITE_FILE, chunked under the
-         * protocol payload cap so any write size succeeds. */
+         * protocol payload cap so any write size succeeds. A plain Output
+         * open routes through the caller's binding (console_output_write);
+         * a ScreenBuffer open writes ITS buffer on ITS console. */
+        PCONDRV_CONSOLE console = open->console != 0 ? open->console : CondrvCallerConsole();
+        if (console == 0)
+        {
+            return STATUS_INVALID_HANDLE;
+        }
         ULONG written = 0;
         while (written < length || length == 0)
         {
@@ -714,7 +1018,7 @@ static NTSTATUS CondrvConsoleWrite(PFILE_OBJECT file, const void *buffer, ULONG 
             }
             ULONG_PTR ignored = 0;
             NTSTATUS status =
-                CondrvForward(IOCTL_CONDRV_WRITE_FILE, open->outputId,
+                CondrvForward(console, IOCTL_CONDRV_WRITE_FILE, open->outputId,
                               (const unsigned char *)buffer + written, chunk, 0, 0, &ignored);
             if (!NT_SUCCESS(status))
             {
@@ -740,6 +1044,7 @@ static NTSTATUS CondrvConsoleDeviceControl(PFILE_OBJECT file, ULONG code, const 
 {
     (void)request; /* console verbs complete inline (docs/19 §2) */
     PCONDRV_OPEN open = file->fsContext;
+    PEPROCESS process = KeGetCurrentThread()->process;
     if (open->kind == CondrvOpenServer)
     {
         if (code == IOCTL_CONDRV_SETUP_INPUT)
@@ -750,7 +1055,7 @@ static NTSTATUS CondrvConsoleDeviceControl(PFILE_OBJECT file, ULONG code, const 
         if (code == IOCTL_CONDRV_CTRL_EVENT)
         {
             /* conhost's ctrl-event fanout (CUI-4): it swallowed a ^C key
-             * record and asks the OS to signal the console's processes.
+             * record and asks the OS to signal ITS console's processes.
              * group_id 0 means every attached process (wineserver's
              * console_server_ioctl -> propagate_console_signal). */
             const struct condrv_ctrl_event *event = input;
@@ -759,13 +1064,46 @@ static NTSTATUS CondrvConsoleDeviceControl(PFILE_OBJECT file, ULONG code, const 
                 return STATUS_INVALID_PARAMETER;
             }
             *infoOut = 0;
-            return PsPropagateConsoleCtrlEvent((ULONG)event->event, event->group_id);
+            return PsPropagateConsoleCtrlEvent(open->console, (ULONG)event->event, event->group_id);
         }
         return STATUS_INVALID_DEVICE_REQUEST;
     }
-    if (code == IOCTL_CONDRV_BIND_PID)
+    if (open->kind == CondrvOpenConnection && code == IOCTL_CONDRV_BIND_PID)
     {
-        /* Wine's wineserver-side bookkeeping; one global console here. */
+        /* AttachConsole's kernel half (wineserver console_connection_ioctl):
+         * adopt the target process's console. An already-bound caller
+         * refuses; a target with no console refuses; ATTACH_PARENT_PROCESS
+         * resolves to the caller's parent. Pinned by sem_console/
+         * bind_pid_adopt. */
+        if (inputLength != sizeof(unsigned int))
+        {
+            return STATUS_INVALID_PARAMETER;
+        }
+        if (process->console != 0)
+        {
+            return STATUS_INVALID_HANDLE;
+        }
+        /* ATTACH_PARENT_PROCESS = (DWORD)-1 (third_party/wine
+         * include/wincon.h:33; resolved server-side exactly as wineserver's
+         * BIND_PID arm resolves it to the caller's parent id). */
+        uint64_t pid = *(const unsigned int *)input;
+        if (pid == 0xffffffff)
+        {
+            pid = process->parentProcessId;
+        }
+        PEPROCESS target = 0;
+        NTSTATUS status = PsLookupProcessByProcessId((HANDLE)(uintptr_t)pid, &target);
+        if (!NT_SUCCESS(status))
+        {
+            return status;
+        }
+        if (target->console == 0)
+        {
+            ObDereferenceObject(target);
+            return STATUS_ACCESS_DENIED;
+        }
+        CondrvBindProcess(process, target->console);
+        ObDereferenceObject(target);
         *infoOut = 0;
         return STATUS_SUCCESS;
     }
@@ -782,16 +1120,46 @@ static NTSTATUS CondrvConsoleDeviceControl(PFILE_OBJECT file, ULONG code, const 
         {
             return STATUS_INVALID_PARAMETER;
         }
-        uint64_t group =
-            event->group_id != 0 ? event->group_id : KeGetCurrentThread()->process->processGroupId;
+        PCONDRV_CONSOLE console =
+            open->kind == CondrvOpenConsole ? open->console : process->console;
+        if (console == 0)
+        {
+            return STATUS_INVALID_HANDLE;
+        }
+        uint64_t group = event->group_id != 0 ? event->group_id : process->processGroupId;
         if (group == 0)
         {
             return STATUS_INVALID_PARAMETER;
         }
         *infoOut = 0;
-        return PsPropagateConsoleCtrlEvent((ULONG)event->event, group);
+        return PsPropagateConsoleCtrlEvent(console, (ULONG)event->event, group);
     }
-    return CondrvForward(code, open->kind == CondrvOpenOutput ? open->outputId : 0, input,
+
+    /* Data verbs forward to the console's conhost. A Console-kind handle
+     * (the ConsoleHandle kernelbase ioctls GET_WINDOW and friends through)
+     * targets ITS console (wineserver console_ioctl); Input/Output handles
+     * and ScreenBuffer-less opens route through the caller's binding at
+     * call time (console_input_ioctl / console_output_ioctl). */
+    PCONDRV_CONSOLE console;
+    switch (open->kind)
+    {
+    case CondrvOpenConsole:
+        console = open->console;
+        break;
+    case CondrvOpenOutput:
+        console = open->console != 0 ? open->console : CondrvCallerConsole();
+        break;
+    case CondrvOpenInput:
+        console = CondrvCallerConsole();
+        break;
+    default:
+        return STATUS_INVALID_DEVICE_REQUEST; /* other verbs on a connection */
+    }
+    if (console == 0)
+    {
+        return STATUS_INVALID_HANDLE;
+    }
+    return CondrvForward(console, code, open->kind == CondrvOpenOutput ? open->outputId : 0, input,
                          inputLength, output, outputLength, infoOut);
 }
 
@@ -814,9 +1182,7 @@ void CondrvInitialize(void)
 {
     IopInitializeFcb(&CondrvSerialFcb);
     IopInitializeFcb(&CondrvConsoleFcb);
-    InitializeListHead(&CondrvConsole.requestQueue);
-    InitializeListHead(&CondrvConsole.readQueue);
-    CondrvConsole.nextOutputId = 1; /* id 1 = conhost's pre-created buffer */
+    InitializeListHead(&CondrvConsoleList);
     /* GetFileType maps FILE_DEVICE_SERIAL_PORT and FILE_DEVICE_CONSOLE to
      * FILE_TYPE_CHAR (Wine dlls/kernelbase/file.c); the console value is
      * what wineserver's console objects report (server/console.c
