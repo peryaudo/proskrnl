@@ -1296,6 +1296,134 @@ int SessionRun(int abiFailures, int registryOk)
     return failures;
 }
 
+/* Open a SYNCHRONIZE handle to the process named explorer.exe, or 0 when no
+ * such process exists. The toolhelp shape: SystemProcessInformation for the
+ * pid, NtOpenProcess by CLIENT_ID — the same two calls kernelbase's
+ * CreateToolhelp32Snapshot/OpenProcess make, so this rides the surface those
+ * tests pin (sem_ps/system_processes, open_process) rather than growing an
+ * open-by-name the kernel refuses.
+ *
+ * *snapshotStatus reports whether the process list was SEEN: a failed
+ * snapshot (an over-64K process list, say) returns 0 with a failing status,
+ * and the caller must not read that 0 as "the shell is gone" — ending the
+ * session on blindness would re-create the very power-off-under-a-healthy-
+ * desktop defect SessionParkOnShell exists to fix. */
+static HANDLE SessionOpenShellProcess(NTSTATUS *snapshotStatus)
+{
+    static unsigned char SessionProcessSnapshot[64 * 1024]; /* bss, not this thread's stack */
+    static const WCHAR shellImage[] = WSTR("explorer.exe");
+    const ULONG shellImageBytes = sizeof(shellImage) - sizeof(WCHAR);
+
+    ULONG returned = 0;
+    NTSTATUS status = NtQuerySystemInformation(SystemProcessInformation, SessionProcessSnapshot,
+                                               sizeof(SessionProcessSnapshot), &returned);
+    *snapshotStatus = status;
+    if (status != STATUS_SUCCESS)
+        return 0;
+
+    ULONG offset = 0;
+    for (;;)
+    {
+        const SYSTEM_PROCESS_INFORMATION *entry =
+            (const SYSTEM_PROCESS_INFORMATION *)(SessionProcessSnapshot + offset);
+        if (entry->ProcessName.Length == shellImageBytes && entry->ProcessName.Buffer != 0)
+        {
+            int matches = 1;
+            for (ULONG i = 0; i < shellImageBytes / sizeof(WCHAR); i++)
+            {
+                WCHAR c = entry->ProcessName.Buffer[i];
+                if (c >= 'A' && c <= 'Z')
+                    c += 'a' - 'A';
+                if (c != shellImage[i])
+                {
+                    matches = 0;
+                    break;
+                }
+            }
+            if (matches)
+            {
+                OBJECT_ATTRIBUTES attr;
+                CLIENT_ID clientId;
+                HANDLE process = 0;
+                attr.Length = sizeof(attr);
+                attr.RootDirectory = 0;
+                attr.ObjectName = 0;
+                attr.Attributes = 0;
+                attr.SecurityDescriptor = 0;
+                attr.SecurityQualityOfService = 0;
+                clientId.UniqueProcess = entry->UniqueProcessId;
+                clientId.UniqueThread = 0;
+                if (NtOpenProcess(&process, SYNCHRONIZE, &attr, &clientId) == STATUS_SUCCESS)
+                    return process;
+                /* Exited between snapshot and open: keep scanning. */
+            }
+        }
+        if (entry->NextEntryOffset == 0)
+            return 0;
+        offset += entry->NextEntryOffset;
+    }
+}
+
+/* Park the interactive shell session on the desktop shell's LIFETIME. Its
+ * exit ends the session (smss returns, the kernel powers the VM off), but its
+ * launch is not ours to make: win32u auto-launches explorer for the first
+ * GUI client that finds no desktop window — the windowed conhost, during
+ * bringup, landed on desktop "shell" by the routing values
+ * SmssShellDesktopConfig writes (dlls/win32u/winstation.c
+ * get_desktop_window). Launching a second explorer here was the defect this
+ * park replaces: Wine's explorer resolves desktop-window ownership by
+ * EXITING the instance that finds the window already created
+ * (programs/explorer/desktop.c manage_desktop, hwnd == 0), so smss parked on
+ * a process whose immediate clean exit read as "session over" and powered
+ * the VM off underneath a healthy desktop.
+ *
+ * The same exit-the-loser rule is why an exit re-scans instead of ending the
+ * session: the explorer this found first can BE such a loser mid-exit, and
+ * only "no explorer.exe left" means the shell is gone. The appear-wait is
+ * bounded and loud — the windowed conhost has normally forced the launch
+ * long before the session flows run, so its expiry means the shell never
+ * came up, and an interactive boot has no runner watching a timeout. */
+static void SessionParkOnShell(void)
+{
+    NTSTATUS snapshotStatus = STATUS_SUCCESS;
+    HANDLE shell = 0;
+    for (ULONG waitedMs = 0; waitedMs < 120000 && shell == 0; waitedMs += 500)
+    {
+        shell = SessionOpenShellProcess(&snapshotStatus);
+        if (shell == 0)
+            SmssSleep(500);
+    }
+    if (shell == 0)
+    {
+        SmssSay("proskrnl: no explorer.exe appeared to own the desktop; ending the session\n");
+        return;
+    }
+    while (shell != 0)
+    {
+        NTSTATUS status = NtWaitForSingleObject(shell, FALSE, 0);
+        NtClose(shell);
+        if (status != STATUS_SUCCESS)
+        {
+            SmssPrintf("proskrnl: waiting on explorer.exe failed (%x); ending the session\n",
+                       SMSS_HEX(status));
+            return;
+        }
+        for (;;)
+        {
+            shell = SessionOpenShellProcess(&snapshotStatus);
+            if (shell != 0 || snapshotStatus == STATUS_SUCCESS)
+                break;
+            /* Blind, not empty: the shell may well still be up, so stay
+             * parked and keep asking rather than power off on a failed
+             * snapshot. Loud each round — a boot stuck here should say so
+             * on serial, not hold the session in silence. */
+            SmssPrintf("proskrnl: process snapshot failed (%x); retrying\n",
+                       SMSS_HEX(snapshotStatus));
+            SmssSleep(5000);
+        }
+    }
+}
+
 /* Hand the console to a human-driven cmd.exe; the kernel powers the VM off
  * when smss exits (`exit` at the prompt). A start failure still returns —
  * an interactive boot has no runner watching a timeout. */
@@ -1317,15 +1445,14 @@ void SessionInteractive(void)
      *
      * Blocking on explorer is the park: the desktop shell does not exit, and
      * when it does the session is over and the kernel powers the VM off —
-     * the same contract `exit` has in the console session. */
+     * the same contract `exit` has in the console session. The shell is NOT
+     * launched here — win32u's auto-launch already made one for the windowed
+     * conhost during bringup (SessionParkOnShell says why launching another
+     * powered the VM off under a healthy desktop). */
     if (SmssIsShellBoot())
     {
         SmssSay("\nproskrnl: interactive desktop - explorer is the launcher\n\n");
-        NTSTATUS exitStatus = 0;
-        NTSTATUS status = SmssRun(WSTR("\\??\\C:\\windows\\system32\\explorer.exe"),
-                                  WSTR("explorer.exe /desktop=shell,1280x800"), 0, 0, &exitStatus);
-        if (status != STATUS_SUCCESS)
-            SmssPrintf("proskrnl: explorer.exe failed to start (%x)\n", SMSS_HEX(status));
+        SessionParkOnShell();
         return;
     }
 
