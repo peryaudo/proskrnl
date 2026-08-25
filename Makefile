@@ -2130,9 +2130,24 @@ $(NTAPI_HELPER): $(NTAPI_DIR)/dll/prshelper.c $(WINE_PE_DLLS)
 	    -shared -Wl,--entry=DllMainCRTStartup $(NTAPI_DIR)/dll/prshelper.c \
 	    $(NTAPI_LIBS) -lgcc -o $@
 
+# The GUI-subsystem console probe (sem_console/subsystem_gate.c): the same
+# CRT-less recipe with --subsystem,windows — the one property under test.
+# Baked at C:\ rather than C:\ntapi so the proskrnl sweep never grades it
+# as a test (the m9_smoke.exe arrangement); beside the test .exes for the
+# oracle, as a prerequisite of the test that spawns it so a filtered
+# `run.sh oracle subsystem_gate` builds both.
+NTAPI_CONPROBE := $(NTAPI_OUT)/conprobe_gui.exe
+$(NTAPI_CONPROBE): $(NTAPI_DIR)/dll/conprobe_gui.c $(WINE_PE_DLLS)
+	@mkdir -p $(dir $@)
+	$(MINGW) $(NTAPI_CFLAGS) -ffreestanding -fno-builtin -nostdlib -nostartfiles \
+	    -Wl,--entry=gui_start -Wl,--subsystem,windows $(NTAPI_DIR)/dll/conprobe_gui.c \
+	    $(NTAPI_LIBS) -lgcc -o $@
+$(NTAPI_OUT)/subsystem_gate.exe: $(NTAPI_CONPROBE)
+
 NTAPIFILES := $(foreach e,$(NTAPI_EXES),win:$(e)=ntapi/$(notdir $(e))) \
-              win:$(NTAPI_HELPER)=ntapi/prshelper.dll
-NTAPI_PAYLOAD := $(NTAPI_EXES) $(NTAPI_HELPER)
+              win:$(NTAPI_HELPER)=ntapi/prshelper.dll \
+              win:$(NTAPI_CONPROBE)=conprobe_gui.exe
+NTAPI_PAYLOAD := $(NTAPI_EXES) $(NTAPI_HELPER) $(NTAPI_CONPROBE)
 
 ntapi-tests: $(NTAPI_PAYLOAD)
 .PHONY: ntapi-tests
