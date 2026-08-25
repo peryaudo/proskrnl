@@ -139,7 +139,18 @@ def main(argv):
                 print(f"qmpctl: no key mapping for character {char!r}", file=sys.stderr)
                 return 2
             qmp.execute("send-key", keys=keys)
-            time.sleep(0.05)
+            # 250 ms per character, not 50: QEMU's virtio-input eventq holds
+            # 64 events and each typed character is ~6 (press+release+SYN per
+            # key, doubled for a shifted one), so the pacing bounds how long
+            # the guest may go without draining before keys fall off the
+            # ring. Measured on the gui5con leg under TCG: cmd.exe's
+            # per-process GDI init (the font sweep every console client runs)
+            # can hold the reader off the CPU for ~1-2 s, which at 50 ms/char
+            # queued ~18 characters (~108 events) and silently lost the
+            # overflow; at 250 ms a 2 s stall queues 8 (~48 events), inside
+            # the ring. Typing stays far inside every guest-side bound the
+            # legs rely on (looper's busy loop alone allows 60 s).
+            time.sleep(0.25)
     elif command == "absmove":
         if len(arguments) != 2:
             print("qmpctl: absmove takes x y (0..32767)", file=sys.stderr)
