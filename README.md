@@ -170,6 +170,28 @@ local macOS Wine.
 
 ## Status
 
+**M11 console rearchitecture complete** (issue #232) — consoles are
+**per-client and on demand**, wineserver's own object model
+(`server/console.c`) implemented by `drivers/condrv.c`: every
+`\Device\ConDrv\Server` open mints a console, `Reference` relative to it
+mints THE console once, `Connection` binds the opening process, and
+Input/Output route through the caller's binding at every call — so
+**stock kernelbase's `alloc_console` runs unmodified**: launching a CUI
+program on the desktop spawns its own windowed conhost (the reworked
+`gui5con` leg drives one end to end), a GUI program never gets a console
+(the create-time subsystem gate, pinned by `sem_console/subsystem_gate`),
+and nothing empty sits on the idle desktop — explorer is launched
+explicitly, the way userinit does it. The boot console is the SERIAL
+console on **every** boot now, GUI boots included (HACK-004 rescoped
+again: the debug channel is permanent and universal), and the whole
+contract is pinned green on the oracle first (`tests/ntapi/sem_console/`,
+7 cases). Couldn't be achieved within the milestone: conhost still
+initializes the full GDI font sweep per console client (a measured
+multi-second cost under TCG — pre-existing, newly load-bearing), and the
+console-dependent winetest pairs stay parked pending un-parking sweeps.
+What's next: un-park the console winetest pairs the per-client model
+unblocks, or continue WOW64/GUI hardening.
+
 **Net-3 complete** — resolution + the acceptance fetch (`docs/02` "Net-3";
 the design is `docs/24` §4e/§4f/§6f). The acceptance is the headline:
 **an UNMODIFIED off-the-shelf tool — curl.exe with bundled LibreSSL —
