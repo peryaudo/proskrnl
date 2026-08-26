@@ -1383,6 +1383,12 @@ static void SessionParkOnShell(void)
         SmssSay("proskrnl: no explorer.exe appeared to own the desktop; ending the session\n");
         return;
     }
+    /* The last step of a desktop boot that anyone can time: from here on the
+     * session is parked and the machine is as up as it gets. The mark's
+     * step time includes the 500 ms polling granularity above, which is why
+     * the profiler's other readings (the kernel's once-a-second line) are
+     * what a sub-second question goes to. */
+    SmssMark("explorer owns the desktop");
     while (shell != 0)
     {
         NTSTATUS status = NtWaitForSingleObject(shell, FALSE, 0);
@@ -1449,6 +1455,7 @@ void SessionInteractive(void)
                                     &SessionShellProcess, &SessionShellThread);
         if (status != STATUS_SUCCESS)
             SmssPrintf("proskrnl: explorer failed to start (%x)\n", SMSS_HEX(status));
+        SmssMark("explorer launched");
         SessionParkOnShell();
         return;
     }
