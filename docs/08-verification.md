@@ -308,6 +308,40 @@ the LLM-driven loop (whose only eyes are the logs) does not chase a lie.
    suspect; only a passing differential test convicts.** "KASAN went quiet" is never a
    completion criterion; "the differential test is green" is.
 
+## Where the boot's TIME went (`GUEST_PROFILE=1`)
+
+Verification says whether a boot is CORRECT; the boot profiler says where it spent
+itself. It is off by default and armed by name — `GUEST_PROFILE=1` on the QEMU command
+line (`tools/qemu.sh`), surfacing as `HKLM\Hardware\qemu` `Profile` like every other
+boot flag — because its first reading changes the shape of a serial line and every
+harness grep is anchored at one. Nothing about the machine's behavior changes with it
+armed; it only says more (`kernel/init/profile.h`).
+
+Four readings, deliberately overlapping, because each alone misleads:
+
+- **A millisecond timestamp on every serial line.** Stamped at the character sink
+  (`kernel/lib/dbgprint.c`), which is where `NtDisplayString` writes too — so smss's
+  lines, Wine's `err:` lines and the kernel's land on ONE timeline.
+- **smss step marks** (`user/smss/smss.c SmssMark`): how long each session-bringup step
+  took, from ring 3 through the ordinary clock service. The timestamps above cannot
+  supply this — a step that prints nothing while it runs has no line to stamp.
+- **A once-a-second delta line**: how much of that second was idle, how many sectors the
+  volume moved and how many whole files it pulled into the page cache, and the top
+  services of that second by on-CPU AND by wall time. Both keys, because ranked by wall
+  the list is always the parking services (a client blocked on the server) — true and
+  useless — and ranked by CPU it cannot tell a busy second from an idle one.
+- **The whole-run totals on the panic dump** (`KiDumpSyscallProfile`): per service, the
+  calls, the wall time and the on-CPU time, over the boot's uptime/idle/syscall-CPU
+  budget. An operator NMI is how a LIVE boot is asked for them —
+  `python3 tests/gui/qmpctl.py build/serial.log.qmp nmi` — the same trigger the timeout
+  path already uses to ask a wedged guest where everyone is.
+
+The wall/CPU split is charged at `KiSwapToNext`, the kernel's one context-switch site, so
+a service's on-CPU time excludes every interval its thread was switched out. Read it with
+the idle share: a device await that spins rather than parks (`docs/19` §8.1) is on-CPU
+time that is really waiting for the volume, and the sector counters are what tell the two
+apart.
+
 ## The QEMU loop (same shape from M1 to the desktop)
 
 Everything normalizes to **non-interactive, finite-time, exit-code + log**:
