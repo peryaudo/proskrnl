@@ -94,6 +94,11 @@ static NTSTATUS FatBatchTransfer(FAT_IO_BATCH *batch, BOOLEAN isWrite, PFAT_VOLU
             return status;
         }
     }
+    /* Staged is still asked-for: the boot profiler counts here as well as at
+     * fs/fat32/fat.c's four direct calls, or the whole-file loads — which go
+     * through the batch and nowhere else — would be invisible in the sector
+     * totals and only the (single-sector) directory traffic would show. */
+    KiProfileCount(isWrite ? KiProfileBlockWrite : KiProfileBlockRead, sectorCount);
     /* Stage only — the device sees the whole batch at the flush. */
     VIO_BLK_REQUEST *request = &batch->requests[batch->count];
     uint64_t lba = volume->partitionFirstLba + sector;

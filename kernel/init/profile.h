@@ -70,6 +70,10 @@ typedef enum
 {
     KiProfileBlockRead,     /* one device read; amount = sectors */
     KiProfileBlockWrite,    /* one device write; amount = sectors */
+    KiProfileMetaRead,      /* the metadata SUBSET of the reads above: one
+                             * uncached single-sector directory/FAT/FSInfo
+                             * read (fs/fat32/fat.c FatReadSector), which is
+                             * one device round trip each */
     KiProfileFileCacheLoad, /* one whole-file cache fill; amount = bytes */
     KiProfileCounterCount
 } KI_PROFILE_COUNTER;
