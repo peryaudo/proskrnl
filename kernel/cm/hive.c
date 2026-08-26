@@ -99,6 +99,7 @@
 
 #include "abi/ntioapi.h"
 #include "kernel/init/panic.h"
+#include "kernel/io/io.h"
 #include "kernel/ke/ke.h"
 #include "kernel/lib/crc32.h"
 #include "kernel/lib/dbgprint.h"
@@ -106,6 +107,7 @@
 #include "kernel/lib/rtl.h"
 #include "kernel/lib/string.h"
 #include "kernel/mm/pool.h"
+#include "kernel/ob/ob.h"
 
 #define CMP_HIVE_MAGIC        0x32564850u /* "PHV2" */
 #define CMP_HIVE_VERSION      2u
@@ -140,6 +142,40 @@
 static KMUTEX CmpHiveMutex;   /* serializes concurrent savers */
 static BOOLEAN CmpHiveReady;  /* set once CmInitialize finished */
 static BOOLEAN CmpHiveWarned; /* one loud line per boot on save failure */
+
+/* A REFERENCE to the live log's file object -- never a handle. Its only job
+ * is to keep the file object alive, which keeps the fs's FCB alive, which
+ * keeps that FCB's page cache loaded between appends.
+ *
+ * WHY IT EXISTS. An append opens the file, writes one record at the end, and
+ * closes (CmpAppendToHiveFile). The FCB dies with the last handle
+ * (fs/fat32/fat.c FatDereferenceFcb) and its page cache dies with it, so the
+ * NEXT append's first write pulled the WHOLE hive back off the volume
+ * (fs/fat32/file.c FatEnsureCache loads a file entire) to add one record to
+ * its end. Every mutation therefore cost a read of the whole log, and the log
+ * grows as the boot writes it -- quadratic in the number of values, which is
+ * what made firstboot 93% of a cold boot (measured: `GUEST_PROFILE=1`,
+ * docs/08 "Where the boot's TIME went").
+ *
+ * WHY A REFERENCE AND NOT A HELD HANDLE. Handles belong to the CALLING
+ * thread's process (kernel/ob/handle.c ObpCurrentTable), and appends run on
+ * whatever user thread called NtSetValueKey. A handle kept across appends
+ * would sit in some user process's table -- dying when that process exits,
+ * and un-closable from any other thread, where its numeric value names a
+ * DIFFERENT object. A reference has no table and no owner, so it is safe from
+ * any thread; the transient handle each append opens is unchanged, and now
+ * simply finds the FCB still live (one FCB per on-disk file is the fs
+ * contract, so the open shares it).
+ *
+ * SHARE ACCESS IS NOT AFFECTED: share slots are released at CLEANUP, the last
+ * handle close (kernel/io/file.c IopCleanupFileObject), which has already run
+ * by the time only this reference remains -- so the write opens that follow
+ * see no sharing violation from it.
+ *
+ * It names the file that WAS the live log, so compaction -- which renames a
+ * fresh file over it -- drops it first and takes a new one after
+ * (CmpRewriteHiveLocked). */
+static PVOID CmpHiveFileObject;
 
 void CmpInitializeHiveLock(void)
 {
@@ -732,6 +768,51 @@ static NTSTATUS CmpOpenHiveFile(PCWSTR path, ACCESS_MASK access, ULONG dispositi
                         FILE_SHARE_READ, disposition, options, 0, 0);
 }
 
+/* Both run with the dispatcher's ordinary rules and under CmpHiveMutex where
+ * a rewrite is involved; both are no-ops when there is nothing to do, so the
+ * callers state intent rather than tracking state. */
+static void CmpPinHiveFile(void)
+{
+    if (CmpHiveFileObject != 0)
+    {
+        return;
+    }
+    PKTHREAD thread = KeGetCurrentThread();
+    KPROCESSOR_MODE saved = thread->previousMode;
+    thread->previousMode = KernelMode; /* kernel pointers + a kernel handle */
+    HANDLE handle;
+    NTSTATUS status =
+        CmpOpenHiveFile(CMP_HIVE_PATH, FILE_GENERIC_READ, FILE_OPEN,
+                        FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, &handle);
+    if (NT_SUCCESS(status))
+    {
+        PVOID body;
+        /* Access 0: this reference never reads or writes through the object,
+         * it only keeps it alive. */
+        status = ObReferenceObjectByHandle(handle, 0, &IoFileObjectType, KernelMode, &body, 0);
+        if (NT_SUCCESS(status))
+        {
+            CmpHiveFileObject = body;
+        }
+        NtClose(handle);
+    }
+    thread->previousMode = saved;
+    /* Silent on failure BY DESIGN, and the one case where silence is right:
+     * without the pin every append simply pays the reload it always paid, so
+     * the machine is correct and slow rather than wrong. A hive the appends
+     * themselves cannot open is already loud (CmpHiveWarned). */
+}
+
+static void CmpUnpinHiveFile(void)
+{
+    if (CmpHiveFileObject == 0)
+    {
+        return;
+    }
+    ObDereferenceObject(CmpHiveFileObject);
+    CmpHiveFileObject = 0;
+}
+
 /* Read the whole hive file. *bufferOut is pool (caller frees); FALSE = no
  * usable file (missing, empty, oversized, short read). */
 static BOOLEAN CmpReadHiveFile(UCHAR **bufferOut, ULONGLONG *lengthOut)
@@ -1073,6 +1154,12 @@ static void CmpRewriteHiveLocked(void)
 {
     KeWaitForSingleObject(&CmpHiveMutex, Executive, KernelMode, FALSE, 0);
 
+    /* The pin names the file this is about to REPLACE, so it goes first: the
+     * rename below leaves the old file's directory entry deleted, and holding
+     * a reference to it past that point would keep a dead FCB (and its cache)
+     * alive for nothing. Retaken at the end, naming the new live log. */
+    CmpUnpinHiveFile();
+
     UCHAR *buffer = 0;
     ULONG total = 0;
     NTSTATUS status = CmpSerializeSubtree(CmpRootNode, &buffer, &total);
@@ -1114,6 +1201,11 @@ static void CmpRewriteHiveLocked(void)
     if (NT_SUCCESS(status))
     {
         CmpHiveLogBytes = total;
+        /* The file just renamed into place is the live log now, so the
+         * appends that follow get their FCB kept alive. Only on success: a
+         * failed rewrite leaves whatever was there before, and pinning a file
+         * this function could not write is pinning a guess. */
+        CmpPinHiveFile();
     }
     KeReleaseMutex(&CmpHiveMutex, FALSE);
 
