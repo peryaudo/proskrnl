@@ -35,6 +35,13 @@ void SmssPrintf(const char *fmt, ...);
 void SmssInitUnicodeString(UNICODE_STRING *str, const WCHAR *wide);
 void SmssSleep(ULONG milliseconds);
 
+/* The boot profiler's ring-3 half (smss.c, kernel/init/profile.h): print how
+ * long the step that just finished took, and how far into the session it
+ * ends. Silent unless the boot armed the profiler (Hardware\qemu "Profile",
+ * tools/qemu.sh GUEST_PROFILE=1). */
+int SmssIsProfileBoot(void);
+void SmssMark(const char *step);
+
 /* The QEMU boot flags, read out of the volatile
  * \Registry\Machine\Hardware\qemu key the kernel published from the command
  * line's fw_cfg items (kernel/cm/registry.c, HACK-006). An absent key means

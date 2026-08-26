@@ -134,6 +134,54 @@ void SmssPrintf(const char *fmt, ...)
 }
 /* NOLINTEND(clang-analyzer-valist.Uninitialized) */
 
+/* --- the boot profiler's ring-3 half (kernel/init/profile.h) --------------
+ *
+ * The kernel's timestamped serial lines say WHEN each line was printed; they
+ * cannot say how long a step took that prints nothing while it runs, and
+ * bringing the session up IS a sequence of such steps (start a server, apply
+ * wine.inf, launch the shell). So each one is marked here, with the elapsed
+ * milliseconds since boot and since the previous mark — the "which smss step
+ * is eating the boot" reading, taken from ring 3 with the ordinary clock
+ * service rather than from anything privileged.
+ *
+ * Armed by the same boot flag as the kernel's half (Hardware\qemu "Profile",
+ * tools/qemu.sh GUEST_PROFILE=1) and silent otherwise: an unprofiled boot's
+ * serial log is unchanged, which is what keeps the anchored harness greps
+ * honest. The flag is read once — the mark must not itself cost a registry
+ * open per step. */
+static int SmssProfileArmed = -1; /* -1 = not yet asked */
+static LONGLONG SmssProfileBase;  /* NtQuerySystemTime at the first mark */
+static LONGLONG SmssProfileLast;
+
+int SmssIsProfileBoot(void)
+{
+    if (SmssProfileArmed < 0)
+        SmssProfileArmed = SmssQemuFlag(WSTR("Profile"), 0) != 0;
+    return SmssProfileArmed;
+}
+
+/* 100 ns units (the NT system-time unit) to milliseconds. */
+#define SMSS_100NS_PER_MS 10000
+
+void SmssMark(const char *step)
+{
+    if (!SmssIsProfileBoot())
+        return;
+    LARGE_INTEGER now;
+    now.QuadPart = 0;
+    if (NtQuerySystemTime(&now) != STATUS_SUCCESS)
+        return;
+    if (SmssProfileBase == 0)
+    {
+        SmssProfileBase = now.QuadPart;
+        SmssProfileLast = now.QuadPart;
+    }
+    SmssPrintf("smss: [prof] %s (+%ums step, %ums into the session)\n", step,
+               (unsigned int)((now.QuadPart - SmssProfileLast) / SMSS_100NS_PER_MS),
+               (unsigned int)((now.QuadPart - SmssProfileBase) / SMSS_100NS_PER_MS));
+    SmssProfileLast = now.QuadPart;
+}
+
 void SmssInitUnicodeString(UNICODE_STRING *str, const WCHAR *wide)
 {
     USHORT n = 0;
@@ -699,13 +747,18 @@ void SmssStart(void *pebArg)
     /* Before the servers: conhost, the desktop server and winefb.drv all
      * read the derived values, and the server is the first client's first
      * stop. */
+    SmssMark("session start");
     SmssPublishShellBoot();
     SmssStartWineServer();
+    SmssMark("wineserver up");
     SmssShellDesktopConfig();
     SmssAudioDriverConfig();
+    SmssMark("machine state written");
     SmssStartConhost();
+    SmssMark("conhost up");
 
     int failures = SmssRunFirstboot();
+    SmssMark("firstboot done");
 
     /* The interactive boot (make run): a human owns the serial console — the
      * test session is skipped and the console goes straight to cmd.exe. The
