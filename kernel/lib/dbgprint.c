@@ -20,7 +20,19 @@
  *
  * KeTickCount is the millisecond clock; reading it needs no lock (a single
  * aligned 64-bit load on the uniprocessor) and takes none, which matters
- * because this runs from the panic path too. */
+ * because this runs from the panic path too.
+ *
+ * TWO WRITERS CAN INTERLEAVE INSIDE ONE LINE, and then the stamp lands in the
+ * middle of it ("[3.110] [[3.113] KTEST] shellcfg PASS" -- observed). That is
+ * the transport's pre-existing property, not this prefix's: a kernel DbgPrint
+ * and a ring-3 NtDisplayString are separate character streams sharing one
+ * port, and NtDisplayString emits a unit at a time. The prefix only makes it
+ * visible. Left alone deliberately -- line-buffering the sink would need a
+ * buffer the panic path must not depend on, and would reorder the dying
+ * machine's last words, which is the one thing this channel exists for
+ * (Art. 9). It is a reason to grep a PROFILED log loosely, and a reason the
+ * flag is off by default: every harness grep is anchored, and an anchored
+ * grep is exactly what a mid-line stamp breaks. */
 static BOOLEAN DbgpAtLineStart = TRUE;
 
 static void DbgpEmitTimestamp(void)
