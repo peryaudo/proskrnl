@@ -71,6 +71,7 @@ CSRC := kernel/init/main.c \
         kernel/init/bootvid.c \
         kernel/init/panic.c \
         kernel/init/trace.c \
+        kernel/init/profile.c \
         kernel/init/verify.c \
         kernel/init/initrd.c \
         kernel/lib/dbgprint.c \

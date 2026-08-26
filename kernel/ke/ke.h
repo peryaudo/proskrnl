@@ -380,6 +380,17 @@ struct KTHREAD
      * off, which on the uniprocessor IS the lock. */
     uint64_t kernelTime100ns;
     uint64_t userTime100ns;
+
+    /* The boot profiler's per-thread state (kernel/init/profile.h), written
+     * only while it is armed: which service this thread is inside (id + 1;
+     * 0 is "none", because id 0 is a real service), when it entered, when it
+     * last got the CPU back, and the on-CPU cycles it has banked so far.
+     * Syscalls never nest (the dispatcher asserts it), so one slot is the
+     * whole state. */
+    uint64_t profileSyscall;
+    uint64_t profileEntryTsc;
+    uint64_t profileResumeTsc;
+    uint64_t profileCpuTsc;
 };
 
 /* --- sched.c ------------------------------------------------------------- */

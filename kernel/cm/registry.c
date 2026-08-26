@@ -2792,6 +2792,12 @@ static const struct
      * served every leg: the harness asks make for the image, make finds it
      * up to date, and the marker the stress boot ordered is never baked. */
     {"opt/org.proskrnl/stress", WSTR("Stress"), 0},
+    /* The boot profiler (kernel/init/profile.h, tools/qemu.sh
+     * GUEST_PROFILE=1): timestamp every serial line, count and time every
+     * syscall, and print the totals on the panic dump. Off by default
+     * BECAUSE it changes the shape of a serial line, and every harness grep
+     * is anchored at one — a profiled boot is a boot you asked for. */
+    {"opt/org.proskrnl/profile", WSTR("Profile"), 0},
     /* "Does this volume carry a Windows userland" is NOT here either: like
      * `ShellBoot` above it is DERIVED, from `Leg` (CmpNoUserlandLegs below,
      * which carries the reasoning), and published beside these as `Userland`.

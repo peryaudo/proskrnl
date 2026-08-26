@@ -12,6 +12,7 @@
  * every queue is empty.
  */
 #include "kernel/ke/ke.h"
+#include "kernel/init/profile.h"
 #include "kernel/ps/ps.h"
 #include "kernel/init/panic.h"
 #include "kernel/init/trace.h"
@@ -404,6 +405,9 @@ void KiSwapToNext(void)
     next->state = KI_THREAD_STATE_RUNNING;
     KiCurrentThread = next;
     KiTraceEvent(KiTraceSwap, (uint64_t)(uintptr_t)old, (uint64_t)(uintptr_t)next, 0);
+    /* The one switch site is also where the profiler's on-CPU/wall split is
+     * charged (kernel/init/profile.h). A no-op unless armed. */
+    KiProfileSwitch(old, next);
     KiLoadThreadHardwareState(next);
     KiSwapContext(old, next);
     /* Now back on `old`'s stack, someone having switched to us again. */

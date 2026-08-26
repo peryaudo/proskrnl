@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 #include "limine.h"
+#include "kernel/init/profile.h"
 #include "arch/x86_64/serial.h"
 #include "arch/x86_64/rtc.h"
 #include "arch/x86_64/io.h"
@@ -339,6 +340,20 @@ static void KiConfigurePanicOnNotImplemented(void)
  * one image already up to date, and the marker the stress boot ordered is
  * silently absent — which the cui8 leg reports as "knob never armed". A boot
  * decision belongs on the boot's command line. */
+/* The boot profiler (kernel/init/profile.h): timestamped serial lines, a
+ * once-a-second syscall delta, and a per-service total on the panic dump.
+ * Off by default and off on every leg — the timestamp prefix changes what a
+ * serial line looks like and the harness greps are anchored — so it is asked
+ * for by name: tools/qemu.sh GUEST_PROFILE=1. Nothing about the machine's
+ * behavior changes with it armed; it only says more. */
+static void KiConfigureBootProfiler(void)
+{
+    if (CmQueryQemuBootFlag(WSTR("Profile"), 0) != 0)
+    {
+        KiEnableProfiling();
+    }
+}
+
 static void KiConfigureCui8Stress(void)
 {
     if (CmQueryQemuBootFlag(WSTR("Stress"), 0) != 0)
@@ -456,6 +471,7 @@ static void KiTestMainThread(void *context)
      * ring-3 code — smss below is a Wine process (needs only the boot
      * volume, mounted above). */
     KiConfigurePanicOnNotImplemented();
+    KiConfigureBootProfiler();
     KiConfigureCui8Stress();
 
     /* Net-1: lwIP + the netd mainloop over the NIC IoInitializeTransport
