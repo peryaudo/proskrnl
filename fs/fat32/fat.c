@@ -56,6 +56,7 @@ void FatReleaseVolumeGate(PFAT_VOLUME volume)
 NTSTATUS FatReadSector(PFAT_VOLUME volume, uint64_t sector, void *buffer)
 {
     KiProfileCount(KiProfileBlockRead, 1);
+    KiProfileCount(KiProfileMetaRead, 1);
     return VioBlkReadSectors(volume->partitionFirstLba + sector, 1, buffer);
 }
 

@@ -151,7 +151,7 @@ static void KiDumpProfileColumn(const char *title, int byCpu, int wanted)
         {
             break;
         }
-        DbgPrint("    %-34s calls=%-7lu wall=%lums cpu=%lums\n", KiSystemCallName((uint64_t)id),
+        DbgPrint("    %s calls=%lu wall=%lums cpu=%lums\n", KiSystemCallName((uint64_t)id),
                  row->count, KiProfileMilliseconds(row->wallTsc),
                  KiProfileMilliseconds(row->cpuTsc));
     }
@@ -181,11 +181,12 @@ void KiDumpSyscallProfile(void)
     DbgPrint(
         "[PROF] syscalls=%lu over %lums: idle=%lums syscall-cpu=%lums rest(ring-3+irq)=%lums\n",
         calls, uptime, idle, kernel, uptime > idle + kernel ? uptime - idle - kernel : 0);
-    DbgPrint("[PROF] volume: reads=%lu (%lu sectors) writes=%lu (%lu sectors) "
+    DbgPrint("[PROF] volume: reads=%lu (%lu sectors, %lu of them uncached "
+             "single-sector metadata) writes=%lu (%lu sectors) "
              "whole-file cache loads=%lu (%lu KiB)\n",
              KiProfileCounters[KiProfileBlockRead], KiProfileAmounts[KiProfileBlockRead],
-             KiProfileCounters[KiProfileBlockWrite], KiProfileAmounts[KiProfileBlockWrite],
-             KiProfileCounters[KiProfileFileCacheLoad],
+             KiProfileCounters[KiProfileMetaRead], KiProfileCounters[KiProfileBlockWrite],
+             KiProfileAmounts[KiProfileBlockWrite], KiProfileCounters[KiProfileFileCacheLoad],
              KiProfileAmounts[KiProfileFileCacheLoad] / 1024);
     KiDumpProfileColumn("by WALL time (a service that waits is a service that blocks someone):", 0,
                         12);
