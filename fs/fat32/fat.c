@@ -17,6 +17,7 @@
 #include "kernel/lib/rtl.h"
 #include "kernel/lib/dbgprint.h"
 #include "kernel/init/panic.h"
+#include "kernel/init/profile.h"
 #include "abi/ntstatus.h"
 
 /* --- the volume I/O gate (CUI-8, docs/20 R1) ------------------------------- */
@@ -47,25 +48,34 @@ void FatReleaseVolumeGate(PFAT_VOLUME volume)
 
 /* --- sector I/O ------------------------------------------------------------ */
 
+/* These four are the whole file system's traffic to the device, which is why
+ * the boot profiler counts here (kernel/init/profile.h) rather than in the
+ * driver: what a boot profile wants to know is how much of the volume the
+ * FILE SYSTEM asked for, and every such ask goes through one of these. Costs
+ * nothing unless a boot armed the profiler. */
 NTSTATUS FatReadSector(PFAT_VOLUME volume, uint64_t sector, void *buffer)
 {
+    KiProfileCount(KiProfileBlockRead, 1);
     return VioBlkReadSectors(volume->partitionFirstLba + sector, 1, buffer);
 }
 
 NTSTATUS FatWriteSector(PFAT_VOLUME volume, uint64_t sector, const void *buffer)
 {
+    KiProfileCount(KiProfileBlockWrite, 1);
     return VioBlkWriteSectors(volume->partitionFirstLba + sector, 1, buffer);
 }
 
 NTSTATUS FatReadSectorsPhysical(PFAT_VOLUME volume, uint64_t sector, uint32_t sectorCount,
                                 uint64_t physical)
 {
+    KiProfileCount(KiProfileBlockRead, sectorCount);
     return VioBlkReadSectorsPhysical(volume->partitionFirstLba + sector, sectorCount, physical);
 }
 
 NTSTATUS FatWriteSectorsPhysical(PFAT_VOLUME volume, uint64_t sector, uint32_t sectorCount,
                                  uint64_t physical)
 {
+    KiProfileCount(KiProfileBlockWrite, sectorCount);
     return VioBlkWriteSectorsPhysical(volume->partitionFirstLba + sector, sectorCount, physical);
 }
 

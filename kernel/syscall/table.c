@@ -23,6 +23,7 @@
 #include "kernel/ob/ob.h"
 #include "kernel/init/panic.h"
 #include "kernel/init/trace.h"
+#include "kernel/init/profile.h"
 #include "kernel/lib/dbgprint.h"
 
 #include "abi/ntobapi.h"
@@ -166,6 +167,10 @@ void KiSystemServiceTrap(PKTRAP_FRAME trapFrame)
     {
         ASSERT(thread->previousMode == KernelMode); /* syscalls never nest */
         thread->previousMode = UserMode;
+        /* The boot profiler's entry edge (kernel/init/profile.h): inside the
+         * implemented-service branch, so a MISSING id costs nothing and a
+         * refused one is not counted as work. A no-op unless armed. */
+        KiProfileSyscallEnter(thread, number);
 
         /* Arguments 1-4 came in registers (r10/rdx/r8/r9); 5.. come from the
          * user stack. A service that terminates the caller never returns. */
@@ -204,6 +209,7 @@ void KiSystemServiceTrap(PKTRAP_FRAME trapFrame)
             }
         }
 
+        KiProfileSyscallExit(thread);
         thread->previousMode = KernelMode;
     }
 

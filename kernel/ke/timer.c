@@ -13,6 +13,7 @@
  * DPCs are dropped by design (docs/03): a non-NULL KDPC panics.
  */
 #include "kernel/ke/ke.h"
+#include "kernel/init/profile.h"
 #include "kernel/init/panic.h"
 #include "kernel/lib/dbgprint.h"
 #include "kernel/syscall/syscall.h"
@@ -479,6 +480,13 @@ void KiUpdateClock(BOOLEAN interruptedUser)
      * not on this backstop's absence. Idempotent when the ISR already
      * harvested; respects the §8.1 completion hold (VioBlkDrain). */
     IoDrainDeviceCompletions();
+
+    /* The profiler's once-a-second delta line (kernel/init/profile.h): the
+     * clock is the only periodic edge in the kernel, and a boot profile needs
+     * to say WHEN a service was busy, not just how much. A no-op unless
+     * armed, and it neither waits nor allocates — the tick region must not
+     * block (G14).  */
+    KiProfileTick();
 }
 
 void KeInitializeTimerEx(PKTIMER timer, TIMER_TYPE type)

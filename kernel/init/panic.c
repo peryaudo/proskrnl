@@ -6,6 +6,7 @@
  * UBSan traps (#UD) both land here.
  */
 #include "kernel/init/panic.h"
+#include "kernel/init/profile.h"
 #include "kernel/init/trace.h"
 #include "kernel/lib/dbgprint.h"
 #include "kernel/ke/ke.h"
@@ -176,6 +177,9 @@ static void KiDumpSystemState(void)
         DbgPrint("  uaccess_unwinds=%lu (unexpected=%lu)\n", KiUserFaultRecoveryCount,
                  KiUserFaultRecoveryUnexpected);
     }
+    /* Where the time went, beside where everyone is (kernel/init/profile.h).
+     * Prints nothing unless the boot armed the profiler. */
+    KiDumpSyscallProfile();
     KiDumpTraceRing();
 }
 

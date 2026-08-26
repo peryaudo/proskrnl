@@ -296,6 +296,17 @@ fi
 # boots whose whole point is the maximally different legal interleaving. It
 # used to be a marker file baked into the image (CUI8_STRESS), which is not a
 # property a boot can choose once one image serves every leg.
+# GUEST_PROFILE=1: arm the guest's boot profiler (kernel/init/profile.h) —
+# every serial line gets a millisecond timestamp, every syscall is counted and
+# timed, and the totals ride the panic dump (so `tests/gui/qmpctl.py $LOG.qmp
+# nmi` against a live boot prints where its time went). Off by default and off
+# on every leg: the timestamp prefix changes the shape of a serial line and the
+# harness greps are anchored at one, so a profiled boot is one you asked for.
+# Nothing about the machine's behavior changes with it armed.
+if [[ "${GUEST_PROFILE:-0}" != 0 ]]; then
+    FWCFG_ARGS+=(-fw_cfg name=opt/org.proskrnl/profile,string=1)
+fi
+
 if [[ "${GUEST_STRESS:-0}" != 0 ]]; then
     FWCFG_ARGS+=(-fw_cfg name=opt/org.proskrnl/stress,string=1)
 fi

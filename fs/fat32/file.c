@@ -7,6 +7,7 @@
  * SetDisposition/Cleanup here (docs/04 "ntsem" concern, folded into the ops).
  */
 #include "fs/fat32/fat.h"
+#include "kernel/init/profile.h"
 #include "drivers/virtio/blk.h" /* CUI-8: batched direct-DMA page transfers */
 #include "kernel/io/io.h"
 #include "kernel/mm/pool.h"
@@ -177,6 +178,12 @@ NTSTATUS FatEnsureCache(PFAT_FCB fcb)
         return status;
     }
     fcb->cacheLoaded = TRUE;
+    /* One whole file, pulled in whole. Counted for the boot profiler
+     * (kernel/init/profile.h) because the count against the number of OPENS
+     * is what says whether a boot is re-reading the same files: the cache
+     * lives on the FCB and the FCB dies with the last handle
+     * (fs/fat32/fat.c FatDereferenceFcb), so a reopen refills it. */
+    KiProfileCount(KiProfileFileCacheLoad, fcb->fileSize);
     return STATUS_SUCCESS;
 }
 
