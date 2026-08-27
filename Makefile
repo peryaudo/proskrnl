@@ -1409,7 +1409,7 @@ WSRV_OBJS  := $(patsubst $(WSRV_DIR)/server/%.c,$(WSRV_BUILD)/%.o,$(WSRV_SRCS)) 
 $(WSRV_BUILD)/%.o: $(WSRV_DIR)/server/%.c
 	@mkdir -p $(dir $@)
 	$(MINGW) $(W32U_CFLAGS) $(SRV_RENAME_FLAGS) -I. -I$(WINE_W32U) -I$(WINE_SRV) \
-	    -I$(WSRV_DIR)/common -c $< -o $@
+	    -I$(WSRV_DIR)/common -Iuser/wine/dlls/winefb.drv -c $< -o $@
 
 WINESERVER_LITE := $(BUILD)/modules/wineserver-lite.exe
 $(WINESERVER_LITE): $(WSRV_OBJS) $(SRV_OBJS) $(W32U_BUILD)/prsk_request_table.o $(WINE_PE_DLLS)

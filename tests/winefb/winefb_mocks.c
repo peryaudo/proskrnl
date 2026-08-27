@@ -110,20 +110,11 @@ int __cdecl __wine_dbg_header(enum __wine_debug_class cls, struct __wine_debug_c
     return -1;
 }
 
-/* --- the driver globals display.c/input.c/cursor.c/init.c would provide -- */
+/* --- the driver globals display.c/cursor.c/init.c would provide -- */
 
 struct winefb_scanout winefb_scanout;
-BOOL winefb_pointer_present;
 
 void winefb_cursor_present(void)
-{
-}
-
-void winefb_cursor_update(void)
-{
-}
-
-void winefb_start_input(void)
 {
 }
 

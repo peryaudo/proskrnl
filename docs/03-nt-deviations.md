@@ -4741,20 +4741,43 @@ window, and again wherever the uncover repair reaches desktop-owned pixels. The 
 authority split as an X root window. The color is reported on serial
 (`[KTEST] gui2 desktop … bg=…`) and the checkers sample against the report, never assume.
 
-**Input0's reader placement was a live bug, fixed here.** The GUI-2 start hook —
-`pUpdateDisplayDevices` — is never called once the display cache is warm in the registry, so
-the app under test had *no* reader at all (the gui3 logs proved it: `input READY` only in an
-early firstboot-era process). `winefb_start_input` is now idempotent and also fires at the
-first window surface; every GUI process attempts the exclusive opens, one wins, losers exit
-quietly on `STATUS_SHARING_VIOLATION`. Residual: if the winning process dies, input is
-orphaned until a process that has not yet attempted creates its first surface.
+**Input0's reader placement was a live bug twice, and the second fix moved the readers into
+the session server.** First shape: the GUI-2 start hook — `pUpdateDisplayDevices` — is never
+called once the display cache is warm in the registry, so the app under test had *no* reader
+at all. The fix made `winefb_start_input` idempotent and fired it at the first window
+surface: every GUI process attempted the exclusive opens, one won, losers exited quietly on
+`STATUS_SHARING_VIOLATION` — with a *named* residual: if the winning process died, input was
+orphaned until a process that had not yet attempted created its first surface. The residual
+then shipped as a user-visible bug: a cold `make rungui`'s firstboot churn hands the claim
+to a chain of transients ending in the second explorer, which loses the desktop race and
+exits — no mouse, no keyboard, until reboot (three `input READY` claims on one boot; the NMI
+dump showed no thread left in `NtReadFile` on either device).
+
+Second fix, the current design: **wineserver-lite hosts the readers** — the RIT's role,
+placed where NT 3.x placed it (the user-mode session server; win32k took it later). The pump
+(`wineserver-lite/server/rawinput.c`) claims both exclusive opens at bring-up, *before* the
+transport is published, so it wins deterministically, and its lifetime is the session's — the
+orphan is unreachable, not retried around. Injection is the same engine a client's
+`NtUserSendHardwareInput` reaches: a `send_hardware_message` request run through
+`prsk_internal_dispatch` (shim.c) under the server lock, with hardware origin, for which the
+whole pinned path is `current`-independent; what win32u does client-side before that request
+(kbdus scancode→vkey resolution, abs→pixel scaling) the pump mirrors, tables cited. The pump
+is also the cursor's mover: one more scanout writer that draws the shared arrow
+(`cursorshape.h`) and repairs the vacated rect — overlapped top-levels through
+`redraw_window`, the desktop remainder filled directly. The per-process readers are
+**deleted, not demoted**: a GUI client never opens `\Device\Input0/1` at all — the devices
+belong to the session server the way NT's input hardware belongs to the RIT, and a fallback
+electorate beneath it would just be the orphaning bug kept on retainer. The coldinput leg
+pins the placement (READY precedes the first client attach) and the acceptance (the
+`gui4 ptr` echo on a settled cold boot).
 
 **Pointer injection is the winewayland shape, per event.** The tablet's absolute axes scale
-to scanout pixels in the reader (range from `IOCTL_PRSHID_GET_ABS_INFO`, screen from the
+to scanout pixels in the pump (range from `IOCTL_PRSHID_GET_ABS_INFO`, screen from the
 mode — no QEMU constant on either side) and inject as
-`MOUSEEVENTF_MOVE|ABSOLUTE|MOVE_NOCOALESCE` with hwnd 0: the reader serves the desktop, and
+`MOUSEEVENTF_MOVE|ABSOLUTE|MOVE_NOCOALESCE` with hwnd 0: the pump serves the desktop, and
 the unmodified server routes by capture and coordinate (`find_hardware_message_window`).
-`MOVE_NOCOALESCE` bypasses win32u's motion accumulator — QEMU already coalesced.
+`MOVE_NOCOALESCE` bypasses the motion accumulator win32u would apply — QEMU already
+coalesced.
 
 **The cursor is a software arrow, composited by every writer.** No hardware cursor plane
 exists — and acquiring one is not the cheap fix it sounds like: `-vga std` (QEMU's
@@ -4775,12 +4798,12 @@ its snapshot goes stale the moment another process flushes over it and restoring
 a cursor-sized patch of pixels captured somewhere else. GUI-4 shipped that (with the
 artifact documented, and both gui4 clients repainting themselves to hide it); GUI-5 replaced
 it. When the pointer moves, the vacated rect is repainted **from whoever owns those
-pixels** — `winefb_repaint_rect`, the same authority the mover uses (Art. 11: the mover and
-the cursor vacate screen rects for different reasons, but there is one walk that repairs
-one). Whether a process draws a cursor at all is decided by whether a pointer *device*
-exists, which every process already learns from `\Device\Input1`'s exclusive open: the
-winner and every loser (`STATUS_SHARING_VIOLATION`) both know, and a keyboard-only image
-draws nothing.
+pixels** — the mover (the server's pump) invalidates the covered top-levels and fills the
+uncovered remainder, the same walk a client's repaint authority does (Art. 11: windows and
+the cursor vacate screen rects for different reasons, but one walk repairs both). Whether a
+process draws a cursor at all needs no pointer-presence flag: only the pump moves the
+cursor, so on a keyboard-only image the published position never leaves the initial `(0,0)`,
+which the paragraph below already refuses to draw at.
 
 **No arrow before the pointer has reported a position**, and the test for that is the
 position itself: `(0,0)` is the desktop's initial cursor value (`server/winstation.c`) and

@@ -21,9 +21,11 @@
  *     above everything, so this is always the right answer, and no writer
  *     has to know a cursor was there;
  *   - when the pointer moves, the rect it left is repainted from whoever
- *     OWNS those pixels -- the same repaint authority the mover uses
- *     (blit.c winefb_repaint_rect) -- rather than from a snapshot. Nothing
- *     is ever restored, so nothing can be stale.
+ *     OWNS those pixels rather than from a snapshot, so nothing is ever
+ *     restored and nothing can be stale. The MOVER is not this process:
+ *     wineserver-lite's raw-input pump (server/rawinput.c) owns the
+ *     devices, moves the cursor and repairs the vacated rect. This file
+ *     only ever draws the arrow where the server says it is.
  *
  * Position comes from the server, which owns it: desktop_shm->cursor is
  * published in the desktop's shared memory and read here through the same
@@ -61,27 +63,24 @@ WINE_DEFAULT_DEBUG_CHANNEL(winefb);
  * pixels from its own scanout mapping (server/rawinput.c). */
 #include "cursorshape.h"
 
-/* Whether this session has a pointer device at all, set by input.c in
- * every process: the reader that won \Device\Input1's exclusive open, and
- * every process that lost it, learned the same fact from the same open.
- * A process with no pointer device draws no cursor -- the gui5 BOOT is
- * keyboard-only, and an arrow parked at the desktop's initial (0,0) there
- * would be exactly the fixed picture of a lie this file refused to draw
- * before the mouse existed. */
-BOOL winefb_pointer_present;
-
 /* Where the cursor is, for ANY process. The server owns the position and
  * publishes it in the desktop's shared memory; this is the seqlock read
  * NtUserGetCursorPos does (dlls/win32u/input.c), which takes no user lock
  * and at most one raw server request per thread -- the rule compose.c
- * established for code that runs inside a surface flush. */
+ * established for code that runs inside a surface flush.
+ *
+ * No "is there a pointer device" flag, on purpose: the only mover is the
+ * server's pump (this process never opens \Device\Input1), so on a
+ * keyboard-only image the published position simply never leaves the
+ * desktop's initial (0,0) -- and the (0,0) test below already refuses to
+ * draw there. An arrow parked at (0,0) on the gui5 BOOT would be exactly
+ * the fixed picture of a lie this file refused to draw before the mouse
+ * existed; absence needs no signal beyond the position itself. */
 static BOOL cursor_position( POINT *pt )
 {
     struct object_lock lock = OBJECT_LOCK_INIT;
     const desktop_shm_t *desktop_shm;
     NTSTATUS status;
-
-    if (!winefb_pointer_present) return FALSE;
 
     while ((status = get_shared_desktop( &lock, &desktop_shm )) == STATUS_PENDING)
     {
@@ -157,38 +156,3 @@ void winefb_cursor_present(void)
     }
 }
 
-/* The pointer thread's move: the rect the arrow is leaving is repainted by
- * its owners, then the arrow is drawn at the new place.
- *
- * Takes no coordinates on purpose. input.c computed a position and handed
- * it to the server, but the SERVER decides where the cursor ends up (it
- * clamps to desktop_shm->cursor.clip, which a ClipCursor caller can
- * narrow), so reading the position back from the one authority is the only
- * way `drawn` can be the rect the arrow is really on. Two copies of "where
- * the cursor is" would drift the day something clips it, and the symptom
- * would be a trail cleaned off a place the arrow never was.
- *
- * Runs on the pointer thread, after the injection, outside every surface
- * lock -- which is what lets it call the repaint authority at all
- * (NtUserRedrawWindow re-enters surface code, blit.c). Single writer for
- * `drawn`: only that thread calls this. */
-void winefb_cursor_update(void)
-{
-    static struct { int x, y; BOOL valid; } drawn;
-    RECT vacated;
-    POINT pt;
-
-    if (!winefb_scanout.pixels) return;
-    if (!cursor_position( &pt )) return;
-
-    if (drawn.valid && (drawn.x != pt.x || drawn.y != pt.y))
-    {
-        SetRect( &vacated, drawn.x, drawn.y, drawn.x + CURSOR_W, drawn.y + CURSOR_H );
-        winefb_repaint_rect( &vacated, NULL );
-    }
-    drawn.x = pt.x;
-    drawn.y = pt.y;
-    drawn.valid = TRUE;
-
-    winefb_cursor_present();
-}

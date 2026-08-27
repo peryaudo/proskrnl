@@ -49,16 +49,13 @@ extern void winefb_window_pos_changed( HWND hwnd, HWND insert_after, HWND owner_
                                        UINT swp_flags, const struct window_rects *new_rects,
                                        struct window_surface *surface );
 extern void winefb_activate_window( HWND hwnd, HWND previous );
-extern void winefb_start_input(void);
 
 /* cursor.c: the software cursor. winefb_cursor_present is the overlay
- * every scanout writer owes back (the cursor is above everything);
- * winefb_cursor_update is the pointer thread's move. winefb_pointer_present
- * says whether this session has a pointer device at all -- no device, no
- * cursor. */
-extern BOOL winefb_pointer_present;
+ * every scanout writer owes back (the cursor is above everything). The
+ * MOVER is wineserver-lite's raw-input pump (server/rawinput.c), not this
+ * process: clients never open the input devices (docs/03 GUI-4 notes),
+ * they only read the position the server publishes and draw. */
 extern void winefb_cursor_present(void);
-extern void winefb_cursor_update(void);
 
 /* compose.c: the z-order queries behind the compositing flush and the
  * uncover repair (blit.c). More top-level windows than this and the excess

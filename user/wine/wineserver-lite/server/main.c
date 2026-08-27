@@ -384,6 +384,10 @@ void WINAPI prsk_server_start(void)
 {
     prsk_log( "[KTEST] gui3 server starting\n" );
     if (!prsk_server_init()) fatal( "server bringup failed" );
+    /* The raw-input pump claims \Device\Input0/1's exclusive opens BEFORE
+     * the transport exists, so no client's fallback reader can ever win
+     * them first (rawinput.c; the coldinput leg pins the order). */
+    prsk_rawinput_start();
     if (!create_transport()) fatal( "transport bringup failed" );
     prsk_log( "[KTEST] gui3 server READY\n" );
     serve_forever();

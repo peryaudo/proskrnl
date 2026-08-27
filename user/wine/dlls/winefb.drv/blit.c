@@ -381,11 +381,6 @@ BOOL winefb_create_window_surface( HWND hwnd, BOOL layered, const RECT *surface_
     *surface = window_surface_create( sizeof(struct winefb_surface), &winefb_surface_funcs, hwnd,
                                       surface_rect, info, 0 );
 
-    /* A process creating a window surface is exactly the kind that should
-     * try for the input devices: pUpdateDisplayDevices (the GUI-2 start
-     * hook) is skipped entirely once the display cache is warm, which left
-     * the app under test with no reader at all (docs/03 GUI-4 notes). */
-    winefb_start_input();
     return TRUE;
 }
 

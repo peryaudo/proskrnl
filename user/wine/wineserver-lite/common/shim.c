@@ -994,6 +994,81 @@ static unsigned int dispatch_request( struct __server_request_info *info, struct
     return reply.reply_header.error;
 }
 
+/* A request from a thread inside the server process (shim.h): the raw-input
+ * pump's injections and repaints go through the same dispatch as a client's
+ * request -- one engine (Art. 11), just entered under the lock directly
+ * instead of over the transport. The synthetic record is the server's own
+ * process as a client of itself, created lazily on the first call and never
+ * reaped: nothing waits on its process handle (it is not a transport slot),
+ * and the server's exit is the session's, so there is no later to reap at.
+ * GetCurrentProcess() is the pseudo-handle; every query create_client runs
+ * against it (session, GUI-ness, parent) answers for the server itself, and
+ * the parent (smss) is no client, so the winstation-inherit branch is a
+ * no-op exactly like the oracle's first process. */
+static struct thread *internal_thread;
+
+/* Under the lock. The record binds to whichever pump thread calls first
+ * and may outlive it (a reader thread exits when its device read fails);
+ * that is safe because proskrnl thread ids are monotonic and never
+ * recycled (kernel/ps/thread.c), so the recorded tid can never come to
+ * name some other thread. */
+static struct thread *internal_bind(void)
+{
+    struct prsk_client *client;
+
+    if (internal_thread) return internal_thread;
+    if (!(client = create_client( GetCurrentProcessId(), GetCurrentProcess() ))) return NULL;
+    return internal_thread = create_thread_record( client, GetCurrentThreadId() );
+}
+
+unsigned int prsk_internal_dispatch( struct __server_request_info *info )
+{
+    unsigned int ret;
+
+    server_lock();
+    if (!internal_bind())
+    {
+        server_unlock();
+        return STATUS_NO_MEMORY;
+    }
+    ret = dispatch_request( info, internal_thread );
+    server_unlock();
+    return ret;
+}
+
+/* A desktop handle for the pump's window queries (shim.h): the VISIBLE
+ * winstation's input desktop -- where the cursor is -- as a handle in the
+ * internal process's table, because the synthetic thread has no desktop of
+ * its own for the requests' desktop=0 fallback to resolve against (that
+ * fallback is get_desktop_window(current), and it answered
+ * STATUS_INVALID_HANDLE to every repaint enumeration until the pump named
+ * the desktop explicitly). Allocated per use and closed with
+ * prsk_internal_close: the input desktop can change across a winstation
+ * switch, so a cached handle would pin yesterday's desktop. */
+unsigned int prsk_internal_input_desktop(void)
+{
+    struct winstation *winstation;
+    struct desktop *desktop;
+    obj_handle_t handle = 0;
+
+    server_lock();
+    if (internal_bind() && (winstation = get_visible_winstation()) &&
+        (desktop = get_input_desktop( winstation )))
+    {
+        handle = alloc_handle( internal_thread->process, desktop, DESKTOP_READOBJECTS, 0 );
+        release_object( desktop );
+    }
+    server_unlock();
+    return handle;
+}
+
+void prsk_internal_close( unsigned int handle )
+{
+    server_lock();
+    if (internal_thread) close_handle( internal_thread->process, handle );
+    server_unlock();
+}
+
 /* A few requests name something only this build can answer.
  *
  * get_desktop_window without `force` returns nothing until some other

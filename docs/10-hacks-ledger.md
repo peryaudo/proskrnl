@@ -56,19 +56,21 @@ names itself on serial and refuses with `STATUS_NOT_IMPLEMENTED` (Art. 12).
 ```
 Status:     active (GUI-1: virtio-input keyboard, eventq polled from a
             blocking read -- no IRQ; statusq unconfigured; exclusive open;
-            GUI-2: read by winefb.drv's input thread, injected as scancodes;
-            GUI-4: a second virtio-input function -- QEMU's tablet -- joins
-            as \Device\Input1: same per-stream contract (verbatim events,
-            blocking, one exclusive reader), FILE_DEVICE_MOUSE, plus one
-            ioctl reporting the device's ABS_INFO range verbatim)
+            GUI-2: injected as scancodes; GUI-4: a second virtio-input
+            function -- QEMU's tablet -- joins as \Device\Input1: same
+            per-stream contract (verbatim events, blocking, one exclusive
+            reader), FILE_DEVICE_MOUSE, plus one ioctl reporting the
+            device's ABS_INFO range verbatim. The one reader of both
+            streams is wineserver-lite's raw-input pump, HACK-003;
+            GUI clients never open the devices)
 Introduced: GUI-1
 Not in NT:  NT routes raw input through win32k / csrss into the input queue.
 Reason:     win32u needs a raw keyboard/mouse event source.
 Scope:      drivers/hid.c ; drivers/hid.h ; drivers/hidproto.h ;
             drivers/virtio/input.c ; drivers/virtio/input.h ;
             kernel/io/file.c + kernel/init/main.c (the two init calls) ;
-            user/wine/dlls/winefb.drv/input.c (GUI-2; GUI-4: + the pointer
-            reader) ; user/wine/dlls/winefb.drv/cursor.c (GUI-4)
+            user/wine/wineserver-lite/server/rawinput.c (the reader) ;
+            user/wine/dlls/winefb.drv/cursor.c (GUI-4: the drawn arrow)
 Retirement: if input routing moves into a kernel win32k (route (b)).
 ```
 
@@ -102,6 +104,11 @@ Not in NT:  NT holds desktop state in kernel win32k (since NT 4.0). NOTE: this i
 Reason:     Reusing Wine's 30-years-tuned GUI state code without transplanting it onto Ob;
             keeps a clean kernel license; trivially removable.
 Scope:      user/wine/wineserver-lite/server/main.c (the process), user/wine/wineserver-lite/
+            server/rawinput.c (the raw-input pump: the RIT's role, hosted here
+            the way NT 3.1's csrss hosted it -- it owns \Device\Input0/1's
+            exclusive opens for the session and injects through the same
+            pinned send_hardware_message handler a client's request reaches;
+            docs/03 "GUI-4 notes"), user/wine/wineserver-lite/
             {transport.h,call.c,srv_glue.c,shim.c} (the wire and the state
             machine's environment), the WINESERVER_LITE link in the Makefile,
             and SmssStartWineServer in user/smss/launch.c, which starts it.

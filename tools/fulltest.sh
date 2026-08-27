@@ -172,7 +172,7 @@ NPROC="$( (nproc || sysctl -n hw.ncpu) 2>/dev/null || echo 4)"
 # shard) and "prove it with make fulltest" must not be a weaker gate than CI.
 # net3 drops out on its own when the pinned curl.exe is absent (the leg refuses
 # loudly before building anything).
-ALL_LEGS=(winetest-gui winetest wow64gui wow64aud winefbunit gui5con gui6 tornwrite gui4 cui8 gui3 gui5 gui2 cui9
+ALL_LEGS=(winetest-gui winetest wow64gui wow64aud winefbunit gui5con gui6 coldinput tornwrite gui4 cui8 gui3 gui5 gui2 cui9
           scm proskrnl firstboot persist cui7 gui audio procs files console boot
           cui6 net net3 resolvunit oracle wow64 fatstress fuzz fatinterop frontier)
 

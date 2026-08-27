@@ -33,6 +33,31 @@ extern void *prsk_client_process_handle( struct prsk_client *client );
 extern unsigned int prsk_server_dispatch( struct prsk_client *client, unsigned int tid,
                                           struct __server_request_info *info );
 
+/* One request from a thread INSIDE the server process -- the raw-input pump
+ * (server/rawinput.c), which is this build's RIT: it reads \Device\Input0/1
+ * and injects through the same pinned handlers a client's request reaches,
+ * under the same server lock the transport and timeout threads take. The
+ * caller is bound to a synthetic client/thread record for the server's own
+ * process, created on first use and never reaped (the server IS the
+ * session; its death is the session's). */
+extern unsigned int prsk_internal_dispatch( struct __server_request_info *info );
+
+/* The pump's window queries need a desktop named explicitly (the synthetic
+ * record has none for the requests' desktop=0 fallback): a handle to the
+ * visible winstation's input desktop in the internal process's table, 0 if
+ * there is none yet. Close it with prsk_internal_close after the queries
+ * it was fetched for -- the input desktop can change across a winstation
+ * switch. */
+extern unsigned int prsk_internal_input_desktop(void);
+extern void prsk_internal_close( unsigned int handle );
+
+/* Start the pump's reader threads (server/rawinput.c). Called once from
+ * the server's own start-up, BEFORE the transport is published: the
+ * session's input devices are claimed before any client can exist, the
+ * way the RIT owns the hardware before any Win32 process runs. Clients
+ * never open \Device\Input0/1 (docs/03 "GUI-4 notes"). */
+extern void prsk_rawinput_start(void);
+
 /* NOTE: queue wake-ups are NOT declared here. They are reached through the
  * queue object's own get_sync op (server/queue.c) and duplicated out to the
  * client by the get_msg_queue_handle fix-up in shim.c, so no separate entry
