@@ -334,7 +334,7 @@ jobs:
   gui:
     needs: setup
     runs-on: ubuntu-24.04
-    timeout-minutes: 140   # ten boots under TCG; was 125 with nine before WOW64 audio
+    timeout-minutes: 155   # eleven boots under TCG; was 140 with ten before coldinput
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/third-party
@@ -441,11 +441,25 @@ jobs:
           GUI_DEADLINE: "900"
 
       # GUI-6: Wine's explorer owns the desktop — wallpaper + file window
-      # against the blessed golden (exact compare, deterministic: no
-      # tablet, one scanout mode, poll-until-match).
+      # against the blessed golden (exact compare, deterministic: the
+      # cursor draws only after its first motion, and the tablet's echo
+      # probe moves it only after the golden matches).
       - name: "GUI-6 the Wine desktop vs tests/gui/golden/desktop.ppm (tests/run/run.sh gui6)"
         if: ${{ !cancelled() }}
         run: tests/run/run.sh gui6
+        env:
+          TIMEOUT: "1200"
+          GUI_DEADLINE: "900"
+
+      # The cold-boot input gate: the `make rungui` arrangement, cold, with
+      # two verdicts — ownership (the session server's `input READY`
+      # precedes the first client attach; a client-owned reader dies with
+      # its host process, docs/03 "GUI-4 notes") and acceptance (after the
+      # boot settles, a QMP-injected move comes back as the exact-pixel
+      # `gui4 ptr` echo).
+      - name: "Cold boot accepts input, server owns the readers (tests/run/run.sh coldinput)"
+        if: ${{ !cancelled() }}
+        run: tests/run/run.sh coldinput
         env:
           TIMEOUT: "1200"
           GUI_DEADLINE: "900"
