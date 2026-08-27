@@ -5,21 +5,22 @@
 #     "claude-agent-sdk>=0.2,<0.3",
 # ]
 # ///
-"""tools/fix_winetest_agent.py - drive /fix-cui-winetest in a loop.
+"""tools/fix_winetest_agent.py - drive /fix-winetest in a loop.
 
-The CUI winetest frontier is closed one manifest item at a time, and
-`.claude/skills/fix-cui-winetest/SKILL.md` is deliberately a ONE-item
+The winetest frontier - the CUI manifest (`tests/winetest/manifest.txt`) and
+the GUI one (`manifest-gui.txt`) - is closed one item at a time, and
+`.claude/skills/fix-winetest/SKILL.md` is deliberately a ONE-item
 workflow: pick, pin, implement, measure, gate-check, merge, stop. Closing the
 frontier therefore means invoking it again and again, each time on a fresh
-context, until the manifest has no `# TODO: Implement` block left.
+context, until neither manifest has a `# TODO: Implement` block left.
 
 This script is that outer loop, built on the Claude Agent SDK:
 
-    while <a checker agent says the manifest still has workable items>:
-        run /fix-cui-winetest on a fresh Opus 5 context
+    while <a checker agent says a manifest still has workable items>:
+        run /fix-winetest on a fresh Opus 5 context
 
 Each iteration is an independent `query()` call, so it starts with an empty
-context exactly as a fresh `/fix-cui-winetest` invocation in the CLI would -
+context exactly as a fresh `/fix-winetest` invocation in the CLI would -
 which is what the skill asks for ("run it in your own context, on purpose").
 Tools are auto-approved (`--permission-mode bypassPermissions`, the SDK
 equivalent of Claude Code's auto mode), because the skill's own header
@@ -93,13 +94,16 @@ except ImportError:  # pragma: no cover - dependency check, not logic
     )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-MANIFEST = REPO_ROOT / "tests" / "winetest" / "manifest.txt"
+MANIFESTS = [
+    REPO_ROOT / "tests" / "winetest" / "manifest.txt",
+    REPO_ROOT / "tests" / "winetest" / "manifest-gui.txt",
+]
 LOCKFILE = REPO_ROOT / "build" / "fix_winetest_agent.lock"
 
 # Both agents run with the Claude Code preset + the repo's own settings, so
 # CLAUDE.md, CLAUDE.local.md and .claude/skills/ are loaded exactly as they
 # are in an interactive session. Without this the SDK loads no filesystem
-# settings at all and /fix-cui-winetest would not exist.
+# settings at all and /fix-winetest would not exist.
 SETTING_SOURCES = ["user", "project", "local"]
 SYSTEM_PROMPT = {"type": "preset", "preset": "claude_code"}
 
@@ -137,7 +141,7 @@ Your turn ended but the iteration is NOT finished -- {reason}
 Nothing is waiting for you: this is a headless run, so anything you
 backgrounded or armed a monitor for never reported back, and the tree is
 exactly as you left it. Pick the work up where it stopped and carry
-`/fix-cui-winetest` to its end -- re-run whatever you were waiting on in the
+`/fix-winetest` to its end -- re-run whatever you were waiting on in the
 FOREGROUND this time, then finish Steps 5-8: the manifest/docs bookkeeping,
 gate-check, `make format`, `make fulltest`, the commits, the PR, the merge.
 
@@ -149,20 +153,24 @@ loop stops for a reason rather than refusing to start the next iteration.
 VERDICT_RE = re.compile(r"^VERDICT:\s*(WORK_REMAINING|NONE_LEFT)\s*$", re.MULTILINE)
 
 CHECKER_PROMPT = """\
-You are the loop condition for an automated runner of the `/fix-cui-winetest`
-skill. Decide ONE thing: does the CUI winetest manifest still contain an
-item that skill would be willing to work?
+You are the loop condition for an automated runner of the `/fix-winetest`
+skill. Decide ONE thing: does either winetest manifest - CUI
+(`tests/winetest/manifest.txt`) or GUI (`manifest-gui.txt`) - still contain
+an item that skill would be willing to work?
 
 The skill's own definition of "workable" (see
-`.claude/skills/fix-cui-winetest/SKILL.md` Step 1) is a commented-out pair
+`.claude/skills/fix-winetest/SKILL.md` Step 1) is a commented-out pair
 whose triage block ends with the marker `# TODO: Implement`. Blocks without
 that marker are category 2 - not reachable without a human reversing a
 recorded decision - and do NOT count.
 
 Run exactly this, from the repository root:
 
-    grep -A1 '^# TODO: Implement$' tests/winetest/manifest.txt \\
-      | grep -E '^# [a-z0-9_.]+\\.exe:' | sed 's/^# //'
+    for m in tests/winetest/manifest.txt tests/winetest/manifest-gui.txt; do
+      echo "== $m"
+      grep -A1 '^# TODO: Implement$' "$m" \\
+        | grep -E '^# [a-z0-9_.]+\\.exe:' | sed 's/^# //'
+    done
 
 Read the surrounding blocks of anything it prints to confirm they really are
 parked-for-a-kernel-reason entries rather than stale markers, and say so.
@@ -179,7 +187,7 @@ Before that line, list the candidate pairs you found (or state that there are
 none) in at most five lines.
 """
 
-FIX_PROMPT_TEMPLATE = "/fix-cui-winetest{args}"
+FIX_PROMPT_TEMPLATE = "/fix-winetest{args}"
 
 
 def log(message):
@@ -290,7 +298,7 @@ def result_summary(result):
 
 
 async def check_work_remaining(model, timeout):
-    """Ask an agent whether the manifest still has an unparkable item."""
+    """Ask an agent whether either manifest still has an unparkable item."""
     options = ClaudeAgentOptions(
         cwd=str(REPO_ROOT),
         model=model,
@@ -334,7 +342,7 @@ def unfinished_reason():
 
 
 async def run_fix_iteration(args, timeout):
-    """Invoke /fix-cui-winetest once, on a fresh context, and see it through.
+    """Invoke /fix-winetest once, on a fresh context, and see it through.
 
     `timeout` bounds the whole iteration including any continuation, so a
     wedged agent cannot buy itself more wall clock by stopping early.
@@ -406,8 +414,9 @@ def assert_clean_tree(allow_dirty):
 
 
 async def main_async(args):
-    if not MANIFEST.exists():
-        sys.exit(f"{MANIFEST} not found - is {REPO_ROOT} the proskrnl checkout?")
+    for manifest in MANIFESTS:
+        if not manifest.exists():
+            sys.exit(f"{manifest} not found - is {REPO_ROOT} the proskrnl checkout?")
 
     if args.check_only:
         remaining = await check_work_remaining(args.checker_model, args.checker_timeout)
@@ -470,14 +479,14 @@ async def main_async(args):
 
 def parse_args(argv):
     parser = argparse.ArgumentParser(
-        description="Run /fix-cui-winetest repeatedly until the CUI winetest frontier is closed.",
+        description="Run /fix-winetest repeatedly until both winetest frontiers (CUI and GUI) are closed.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__.split("Usage:", 1)[1] if "Usage:" in __doc__ else None,
     )
     parser.add_argument(
         "--model",
         default="claude-opus-5",
-        help="model for the /fix-cui-winetest iterations (default: %(default)s)",
+        help="model for the /fix-winetest iterations (default: %(default)s)",
     )
     parser.add_argument(
         "--checker-model",
@@ -512,7 +521,7 @@ def parse_args(argv):
     parser.add_argument(
         "--item",
         default=None,
-        help="argument for the first invocation, e.g. a pair (ntdll:virtual) or a docs/21 item (W8)",
+        help="argument for the first invocation, e.g. a pair (ntdll:virtual, user32:win) or a docs/21 item (W8)",
     )
     parser.add_argument(
         "--iteration-timeout",
