@@ -56,36 +56,10 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(winefb);
 
-/* A 12x20 left-pointing arrow, hotspot at (0,0): 'X' outline pixels, '.'
- * fill pixels, ' ' transparent. The classic two-color shape every
- * software cursor since CGA has drawn; visible on any background because
- * outline and fill contrast with each other. */
-#define CURSOR_W 12
-#define CURSOR_H 20
-
-static const char *const cursor_image[CURSOR_H] =
-{
-    "X           ",
-    "XX          ",
-    "X.X         ",
-    "X..X        ",
-    "X...X       ",
-    "X....X      ",
-    "X.....X     ",
-    "X......X    ",
-    "X.......X   ",
-    "X........X  ",
-    "X.....XXXXX ",
-    "X..X..X     ",
-    "X.X X..X    ",
-    "XX  X..X    ",
-    "X    X..X   ",
-    "     X..X   ",
-    "      X..X  ",
-    "      X..X  ",
-    "       XX   ",
-    "            ",
-};
+/* The arrow shape lives in cursorshape.h, shared with wineserver-lite's
+ * raw-input pump -- the session's cursor MOVER -- which draws the same
+ * pixels from its own scanout mapping (server/rawinput.c). */
+#include "cursorshape.h"
 
 /* Whether this session has a pointer device at all, set by input.c in
  * every process: the reader that won \Device\Input1's exclusive open, and
