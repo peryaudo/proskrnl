@@ -281,7 +281,7 @@ make fulltest                                # THE verdict — every leg CI runs
 ```
 
 The first three are ITERATION: a subset run is never a verdict. `make fulltest`
-(`tools/fulltest.sh`, docs/08) is — it runs the same 26 legs
+(`tools/fulltest.sh`, docs/08) is — it runs the same 36 legs
 `.github/workflows/test.yml` runs, sandboxed one per leg and fanned out over
 this box: the unfiltered oracle and proskrnl legs, the whole CUI winetest
 sweep, `make test`, the fuzzer, the FAT batteries, every CUI and GUI leg, and
@@ -296,7 +296,8 @@ precondition 2). Same rule for any other edit — re-run rather than reason abou
 whether it mattered.
 
 **A red leg is yours until proven otherwise, and there is no longer a
-standing exception.** `make fulltest` should be **26/26**. The one residue
+standing exception.** `make fulltest` should be **36/36** (the `ALL_LEGS`
+list in `tools/fulltest.sh` is the authoritative count). The one residue
 this skill used to tell you to accept — the `winetest` leg going red on the
 ORACLE half of `kernel32:version`, host-local to a KVM developer box — is
 now PARKED in the manifest rather than tolerated, so the leg does not run it
@@ -404,15 +405,15 @@ the pair went green (and if not, the measured residue), what the oracle
 refuted, and the verification you ran — quote the `make fulltest` summary
 line, and name the host-local exception if you accepted one.
 
-Then merge. **Do not wait for CI.** CI runs the same 26 legs `make fulltest`
+Then merge. **Do not wait for CI.** CI runs the same 36 legs `make fulltest`
 just ran; waiting adds half an hour and no information. Merge only with all
 three of these true:
 
-1. `make fulltest` green — all 26 legs. There is no tolerated residue any
+1. `make fulltest` green — all 36 legs. There is no tolerated residue any
    more (Step 4); a red leg is a stop;
 2. the commits are exactly the tree you tested, and `git status --porcelain` is
    empty. fulltest judges the WORKING tree and CI judges the COMMITTED one, so
-   an unadded file is green in all 26 legs and red on CI — and any edit after
+   an unadded file is green in all 36 legs and red on CI — and any edit after
    the run, including a "trivial" comment fix, invalidates it. Re-run rather
    than reason about whether it mattered;
 3. `make format` clean and the Step 6 gate-check resolved.
