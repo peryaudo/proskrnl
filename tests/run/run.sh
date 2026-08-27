@@ -3947,10 +3947,25 @@ wow64gui() {
 # The verdict is the golden image the earlier GUI checkers deferred to this
 # milestone: an EXACT compare of QEMU's screendump against
 # tests/gui/golden/desktop.ppm (check_gui6.py). Determinism is built into
-# the leg, not tolerated by the checker: no tablet is attached (no cursor
-# overlay is ever drawn), the scanout has one fixed mode the golden pins,
-# and the poll below waits until the dump MATCHES — a settling frame
-# (caret, late repaints) fails only the deadline, not the leg.
+# the leg, not tolerated by the checker: a tablet IS attached, but the
+# cursor overlay is only ever drawn after the pointer's first motion
+# (cursor.c's (0,0) rule), and this leg injects no motion until AFTER the
+# golden has matched — so no arrow can be in the compared frame. The
+# scanout has one fixed mode the golden pins, and the poll below waits
+# until the dump MATCHES — a settling frame (caret, late repaints) fails
+# only the deadline, not the leg.
+#
+# The post-match pointer probe is this leg's second verdict: gui6 is the
+# COLD shell boot — the firstboot INF pass churns through short-lived GUI
+# processes and a second explorer that loses the desktop race and exits —
+# which is exactly the arrangement that used to orphan the input readers
+# (docs/03 "GUI-4 notes": the exclusive-open winner kept dying with its
+# transient host process, and every survivor had already burned its one
+# attempt). The desktop LOOKING right proves nothing about whether the
+# session still ACCEPTS input, so after the golden matches the leg moves
+# the tablet and requires the guest to echo the position back — the same
+# `[KTEST] gui4 ptr` contract the gui4 leg pins, on the boot where it
+# historically broke.
 #
 # No oracle leg, for the same reason gui() has none — \Device\Fb0 is a HACK
 # device NT does not have (docs/03 "GUI-1 notes", the G5 adaptation), and
@@ -3963,6 +3978,131 @@ wow64gui() {
 # looks like, the same leg waits for two consecutive IDENTICAL dumps (the
 # settled-frame rule) and writes them to tests/gui/golden/desktop.ppm, to be
 # committed WITH the change that moved the pixels.
+# The `make rungui` arrangement, judged on whether the booted desktop
+# ACCEPTS INPUT. GUEST_INTERACTIVE=1 with the desktop stack on (no
+# GUEST_GUI) is exactly the interactive shell boot a human gets, minus the
+# host window. On a dev image whose firstboot churns (the local Flash INF
+# pass), this arrangement orphaned input: transient GUI processes each
+# claim \Device\Input0/1's exclusive opens, and the LAST claimant was the
+# second explorer that loses the desktop race and exits -- taking the
+# session's only input readers with it (docs/03 "GUI-4 notes"; the winefb
+# readers attempt once per process, so no survivor ever re-opened). The
+# committed payload's firstboot spawns no such transients, which is why
+# the ownership assert below, not the echo probe alone, is the conviction.
+# The gui6 shell boot never trips the orphan either -- its explorer lands
+# on desktop "shell" by name and no loser holds the devices last -- which
+# is why this leg exists: the arrangement is the repro.
+#
+# The probe is the gui4 contract: inject an absolute move over QMP, require
+# the reader's `[KTEST] gui4 ptr` echo of the exact pixel. No golden, no
+# pixels -- the desktop's LOOKS are gui6's verdict; this leg's verdict is
+# that the session still LISTENS after boot settles.
+coldinput() {
+    local img
+    img="$(test_image_copy "$ROOT/build/tests/coldinput.hdd")" || exit 1
+    local dir="$ROOT/build/tests"
+    local sock="$dir/coldinput.sock" log="$dir/coldinput.log"
+    mkdir -p "$dir"
+    rm -f "$sock" "$log"
+
+    QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci virtio-tablet-pci" \
+        MEM="${MEM:-1024M}" TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-COLDINPUT-NEVER' \
+        GUEST_INTERACTIVE=1 \
+        "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
+    local qemu_wrapper=$!
+
+    coldinput_fail() {
+        python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
+        wait "$qemu_wrapper" 2>/dev/null || true
+        echo "== coldinput: FAIL ($1; see $log) =="
+        return 1
+    }
+    await() {
+        local pattern="$1" deadline=$((SECONDS + ${GUI_DEADLINE:-900}))
+        while ((SECONDS < deadline)); do
+            grep -qaE "$pattern" "$log" 2>/dev/null && return 0
+            kill -0 "$qemu_wrapper" 2>/dev/null || return 1  # QEMU died first
+            sleep 1
+        done
+        return 1
+    }
+    qmp() { python3 "$ROOT/tests/gui/qmpctl.py" "$sock" "$@"; }
+
+    await '\[KTEST\] gui3 server READY' || \
+        { coldinput_fail "wineserver-lite never published its transport"; return 1; }
+    await '\[KTEST\] firstboot PASS' || \
+        { coldinput_fail "firstboot never completed"; return 1; }
+    await '\[KTEST\] gui2 desktop w=' || \
+        { coldinput_fail "no process ever owned the desktop window"; return 1; }
+
+    # WHO owns the readers is the conviction the echo probe below cannot
+    # carry: on a boot whose firstboot spawns no GUI transients (the
+    # committed payload's boots) the old claim-race also happens to leave a
+    # live reader, so the echo alone stays green while the orphanable
+    # design ships. Session ownership is checkable in the log's ORDER: the
+    # session server's pump claims the devices at bring-up and says READY
+    # before its transport is even published, while a client's reader can
+    # only ever say it after that client attached. READY after the first
+    # attach means a client owns input, and a client's lifetime is not the
+    # session's -- the exact mechanism that orphaned `make rungui`
+    # (docs/03 GUI-4 notes).
+    local ready_line attach_line
+    ready_line=$(grep -n -a -m1 -E '\[KTEST\] gui2 input READY' "$log" | cut -d: -f1)
+    attach_line=$(grep -n -a -m1 -E '\[KTEST\] gui3 client attached' "$log" | cut -d: -f1)
+    if [ -z "$ready_line" ]; then
+        coldinput_fail "no input reader ever started (no 'gui2 input READY')"
+        return 1
+    fi
+    if [ -n "$attach_line" ] && [ "$ready_line" -gt "$attach_line" ]; then
+        coldinput_fail "input was claimed by a CLIENT, not the session server ('gui2 input READY' at log line $ready_line, after the first client attach at line $attach_line) — client-owned readers die with their host processes, docs/03 GUI-4 notes"
+        return 1
+    fi
+
+    # Boot settles when the serial log goes quiet: the losing explorer's
+    # exit, the taskbar's flush and the console's paint all print, and the
+    # orphaning happens IN that churn -- probing mid-churn could catch a
+    # doomed reader still alive. Quiescence is arrangement-agnostic where
+    # any single marker would pin this leg to today's paint order.
+    local settle_deadline=$((SECONDS + ${GUI_DEADLINE:-900})) prev_size=-1 size
+    while ((SECONDS < settle_deadline)); do
+        size=$(stat -c %s "$log" 2>/dev/null || echo 0)
+        if [ "$size" = "$prev_size" ]; then break; fi
+        prev_size=$size
+        kill -0 "$qemu_wrapper" 2>/dev/null || { coldinput_fail "QEMU died while settling"; return 1; }
+        sleep 5
+    done
+
+    # The probe (gui4's own arithmetic; geometry all guest-reported).
+    local w h maxx maxy
+    w=$(grep -oaE '\[KTEST\] gui2 mode w=[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
+    h=$(grep -oaE '\[KTEST\] gui2 mode w=[0-9]+ h=[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
+    maxx=$(grep -oaE 'mouse READY abs=[0-9]+\.\.[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
+    maxy=$(grep -oaE 'mouse READY abs=[0-9]+\.\.[0-9]+,[0-9]+\.\.[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
+    if [ -z "$w" ] || [ -z "$h" ] || [ -z "$maxx" ] || [ -z "$maxy" ]; then
+        coldinput_fail "no pointer geometry on serial (no 'gui4 mouse READY' — no reader ever started)"
+        return 1
+    fi
+    local px=$((w / 3)) py=$((h / 3))
+    local vx=$(( (px * maxx + w - 2) / (w - 1) )) vy=$(( (py * maxy + h - 2) / (h - 1) ))
+    qmp absmove "$vx" "$vy" >/dev/null 2>&1 || true
+    local input_deadline=$((SECONDS + 60)) input_ok=""
+    while ((SECONDS < input_deadline)); do
+        if grep -qaE "\[KTEST\] gui4 ptr x=$px y=$py btn=" "$log"; then input_ok=1; break; fi
+        kill -0 "$qemu_wrapper" 2>/dev/null || { coldinput_fail "QEMU died during the input probe"; return 1; }
+        sleep 1
+    done
+    if [ -z "$input_ok" ]; then
+        coldinput_fail "the cold interactive boot no longer accepts pointer input (no 'gui4 ptr x=$px y=$py' echo — the readers died with their host processes, docs/03 GUI-4 notes)"
+        return 1
+    fi
+
+    python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
+    wait "$qemu_wrapper" 2>/dev/null || true
+    assert_contained_faults "$log" 0 coldinput || return 1
+    echo "== coldinput: PASS (the cold rungui boot still accepts input) =="
+    return 0
+}
+
 gui6() {
     local img
     img="$(test_image_copy "$ROOT/build/tests/gui6.hdd")" || exit 1
@@ -3974,8 +4114,9 @@ gui6() {
 
     # gui3's memory reasoning, plus shell32: three Wine processes (server,
     # desktop explorer, file-window explorer), no COW, each copying what it
-    # maps.
-    QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci" MEM="${MEM:-2048M}" \
+    # maps. The tablet is for the post-match input probe; it draws nothing
+    # until the probe moves it (header note above).
+    QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="virtio-keyboard-pci virtio-tablet-pci" MEM="${MEM:-2048M}" \
         TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-GUI6-NEVER' \
         GUEST_SERIAL=1 GUEST_LEG=gui6 \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
@@ -4104,10 +4245,39 @@ gui6() {
         return 1
     fi
 
+    # --- the input probe (header note): the settled desktop must still
+    # ACCEPT input, and only now may the tablet move (the golden has been
+    # matched; an arrow in later frames is nobody's verdict). Geometry is
+    # all guest-reported, the gui4 leg's own arithmetic: the pixel->tablet
+    # rounding makes the guest's floor scaling echo the exact pixel back.
+    local w h maxx maxy
+    w=$(grep -oaE '\[KTEST\] gui2 mode w=[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
+    h=$(grep -oaE '\[KTEST\] gui2 mode w=[0-9]+ h=[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
+    maxx=$(grep -oaE 'mouse READY abs=[0-9]+\.\.[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
+    maxy=$(grep -oaE 'mouse READY abs=[0-9]+\.\.[0-9]+,[0-9]+\.\.[0-9]+' "$log" | tail -1 | grep -oE '[0-9]+$')
+    if [ -z "$w" ] || [ -z "$h" ] || [ -z "$maxx" ] || [ -z "$maxy" ]; then
+        gui6_fail "no pointer geometry on serial (no 'gui4 mouse READY' — no reader ever started)"
+        return 1
+    fi
+    local px=$((w / 2)) py=$((h / 2))
+    local vx=$(( (px * maxx + w - 2) / (w - 1) )) vy=$(( (py * maxy + h - 2) / (h - 1) ))
+    qmp absmove "$vx" "$vy" >/dev/null 2>&1 || true
+    local input_deadline=$((SECONDS + 60)) input_ok=""
+    while ((SECONDS < input_deadline)); do
+        if grep -qaE "\[KTEST\] gui4 ptr x=$px y=$py btn=" "$log"; then input_ok=1; break; fi
+        if desktop_died; then gui6_fail "explorer exited (the [KTEST] gui6 FAIL line names the status)"; return 1; fi
+        kill -0 "$qemu_wrapper" 2>/dev/null || { gui6_fail "QEMU died during the input probe"; return 1; }
+        sleep 1
+    done
+    if [ -z "$input_ok" ]; then
+        gui6_fail "the cold-booted desktop no longer accepts pointer input (no 'gui4 ptr x=$px y=$py' echo — the readers died with their host processes, docs/03 GUI-4 notes)"
+        return 1
+    fi
+
     python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
     wait "$qemu_wrapper" 2>/dev/null || true
     assert_contained_faults "$log" 0 gui6 || return 1
-    echo "== gui6: PASS (the desktop matches tests/gui/golden/desktop.ppm) =="
+    echo "== gui6: PASS (the desktop matches tests/gui/golden/desktop.ppm and still accepts input) =="
     return 0
 }
 
@@ -4219,10 +4389,11 @@ case "$MODE" in
     gui5con)  gui5con ;;
     wow64gui) wow64gui ;;
     gui6)     gui6 ;;
+    coldinput) coldinput ;;
     winefbunit) winefbunit ;;
     resolvunit) resolvunit ;;
     winetest-gui) winetest_gui ;;
-    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|cui9|net|net3|wow64|fatinterop|fatstress|tornwrite|gui|audio|wow64aud|gui2|gui3|gui4|gui5|gui5con|wow64gui|gui6|winefbunit|resolvunit|winetest-gui [pair...]}" >&2
+    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|cui9|net|net3|wow64|fatinterop|fatstress|tornwrite|gui|audio|wow64aud|gui2|gui3|gui4|gui5|gui5con|wow64gui|gui6|coldinput|winefbunit|resolvunit|winetest-gui [pair...]}" >&2
        echo "       subtest = a tests/ntapi test's base name, or a glob over base names" >&2
        echo "       pair    = a winetest <module>[:<subtest>] (ntdll, printf, ntdll:env), or a glob" >&2
        echo "                 (iteration only — the gate is the unfiltered run)" >&2
