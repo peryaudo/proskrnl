@@ -17,13 +17,19 @@
  *   - honest-failure stand-ins for the shell32/shlwapi/wininet/newdev/ws2_32
  *     imports (their DLLs are not loadable here; wineboot's callers of these
  *     all tolerate failure),
- *   - the three shutdown.c entry points (never reached under --init;
- *     shutdown.c itself is not compiled — it is pure user32).
+ *   - the three shutdown.c entry points as the machine's power transition
+ *     (shutdown.c itself is not compiled — it is pure user32 window
+ *     enumeration): under proskrnl the Wine session IS the machine session,
+ *     so --end-session/--kill land on ring-3 NtShutdownSystem (see the
+ *     stand-ins below).
  */
 #include <stdarg.h>
+#include <stdio.h>
+#include <string.h>
 
 #define WIN32_NO_STATUS
 #include <windows.h>
+#include <winternl.h>
 #include <ws2tcpip.h>
 #include <shlobj.h>
 #include <shlwapi.h>
@@ -56,22 +62,93 @@ void __attribute__((used)) wineboot_start(void)
 /* ---- shutdown.c stand-ins ------------------------------------------------ */
 
 /* wineboot.c externs these from shutdown.c (pure user32 window enumeration,
- * not compiled here); only --end-session/--kill reach them. */
+ * not compiled here); only --end-session/--kill reach them, and every
+ * ExitWindows/ExitWindowsEx call arrives as one of those spellings
+ * (dlls/user32/user_main.c ExitWindowsEx — explorer's start-menu
+ * "Exit desktop" among them). Under proskrnl the Wine session IS the machine
+ * session: smss powers the VM off when it ends, the same contract `exit` has
+ * at the console prompt (user/smss/session.c SessionInteractive). With no
+ * user32 here there are no windows to end gracefully — and nothing needs
+ * flushing first, every mutation being durable at syscall return (Art. 3
+ * immediate writeback; the kernel's NtShutdownSystem comment) — so these
+ * entry points ARE the power transition: ring-3 NtShutdownSystem, the
+ * service the CUI-7 acceptance leg already exercises from ring 3
+ * (tests/cui/regtool.c do_shutdown). */
+
+/* ExitWindowsEx appends --shutdown exactly when EWX_REBOOT is absent, so
+ * that flag picks poweroff vs. reboot. Mirrors main's own option scan
+ * (third_party/wine/programs/wineboot/wineboot.c: the "--shutdown" long
+ * form, and one-letter bundles where 's' is shutdown). */
+static BOOL args_request_poweroff(void)
+{
+    int argc = *__p___argc();
+    char **argv = *__p___argv();
+    for (int i = 1; i < argc; i++)
+    {
+        if (strcmp(argv[i], "--shutdown") == 0)
+        {
+            return TRUE;
+        }
+        if (argv[i][0] == '-' && argv[i][1] != '-' && strchr(argv[i] + 1, 's') != NULL)
+        {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+/* Returns only on refusal, loudly — never a fabricated success: the caller
+ * exits 1 and the desktop stays up rather than looking shut down. */
+static BOOL end_machine_session(BOOL poweroff)
+{
+    /* SeShutdownPrivilege is present but disabled in the default token
+     * (tests/ntapi/sem_ps/shutdown.c); enable it the way regtool does. */
+    HANDLE token;
+    TOKEN_PRIVILEGES tp;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token))
+    {
+        fprintf(stderr, "wineboot: OpenProcessToken failed (%lu)\n", GetLastError());
+        return FALSE;
+    }
+    if (!LookupPrivilegeValueA(NULL, "SeShutdownPrivilege", &tp.Privileges[0].Luid))
+    {
+        fprintf(stderr, "wineboot: LookupPrivilegeValue failed (%lu)\n", GetLastError());
+        CloseHandle(token);
+        return FALSE;
+    }
+    tp.PrivilegeCount = 1;
+    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+    BOOL adjusted = AdjustTokenPrivileges(token, FALSE, &tp, 0, NULL, NULL);
+    CloseHandle(token);
+    if (!adjusted || GetLastError() != ERROR_SUCCESS)
+    {
+        fprintf(stderr, "wineboot: enabling SeShutdownPrivilege failed (%lu)\n", GetLastError());
+        return FALSE;
+    }
+
+    NTSTATUS status = NtShutdownSystem(poweroff ? ShutdownPowerOff : ShutdownReboot);
+    fprintf(stderr, "wineboot: NtShutdownSystem refused (%08lx)\n", (unsigned long)status);
+    return FALSE;
+}
+
 BOOL shutdown_close_windows(BOOL force)
 {
     (void)force;
-    return FALSE;
+    return end_machine_session(args_request_poweroff());
 }
 
 BOOL shutdown_all_desktops(BOOL force)
 {
     (void)force;
-    return FALSE;
+    return end_machine_session(args_request_poweroff());
 }
 
 void kill_processes(BOOL kill_desktop)
 {
-    (void)kill_desktop;
+    /* main hands its shutdown flag through this parameter. Reached only on a
+     * bare --kill (EWX_FORCE): with --end-session, shutdown_all_desktops has
+     * already ended the machine above. */
+    end_machine_session(kill_desktop);
 }
 
 /* ---- user32/gdi32 wait-window stand-ins ---------------------------------- */
