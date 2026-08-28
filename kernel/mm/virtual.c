@@ -19,6 +19,12 @@
 
 #include "abi/ntstatus.h"
 
+/* Implemented by the Io manager (kernel/io/rw.c) — the same seam direction
+ * as IopBuildSectionBacking (mm/section.c): write the file's cached byte
+ * range through to the device. Both writeback callers here are Mm's
+ * (MiWritebackMappedView, NtFlushVirtualMemory). */
+NTSTATUS IoWritebackSectionRange(PVOID fileObjectBody, uint64_t offset, uint64_t length);
+
 /* One reservation: [base, base + size), page-granular, with one protection
  * word per page (0 = reserved-only, else the committed PAGE_* value —
  * possibly carrying PAGE_GUARD, in which case the frame is mapped
@@ -97,6 +103,13 @@ struct MI_VAD
      * apart, because a placeholder and a PAGE_NOACCESS reservation report
      * identically through MEMORY_BASIC_INFORMATION. */
     UCHAR placeholder;
+    /* The FILE range this dying view still owes the device, measured by
+     * MiNoteViewWriteback and written by MiWritebackMappedView — see their
+     * comment for why the two cannot be one function. 0 length means nothing
+     * is owed, which is the state of every VAD until it is being destroyed
+     * and of every private one always. */
+    uint64_t flushOffset;
+    uint64_t flushLength;
 };
 
 /* This VAD participates in the placeholder protocol at all. */
@@ -645,6 +658,121 @@ static void MiDecommitPages(PMI_ADDRESS_SPACE space, PMI_VAD vad, uint64_t base,
     }
 }
 
+/* The FILE a shared view's stores land in, or 0 when the view has none: a
+ * private copy (it owns its frames), an image view, a pagefile-backed
+ * section, or the kernel's own KUSER_SHARED_DATA frame (MiCreateMappedVad's
+ * one sectionBody == 0 case). ONE reader for "is this view writeback-
+ * eligible", shared by both writeback sites — MiWritebackMappedView below
+ * and NtFlushVirtualMemory — so the two cannot drift on the question. */
+static PVOID MipViewBackingFile(PMI_VAD vad)
+{
+    if (vad->type != MEM_MAPPED || vad->ownsFrames || vad->sectionBody == 0)
+    {
+        return 0;
+    }
+    PMI_SECTION section = vad->sectionBody;
+    if (section->fileObject == 0 || section->cache == 0)
+    {
+        return 0;
+    }
+    return section->fileObject;
+}
+
+/* --- a dying view's stores (docs/03 "Mapped-view dirty pages") -------------
+ *
+ * A store through a SHARED file-backed view is a plain CPU write into the
+ * file's page cache: no syscall runs, so nothing carries it to the device the
+ * way NtWriteFile's write-through does (kernel/io/rw.c). The cache lives on
+ * the FCB and the FCB dies with the file's last handle (fs/fat32/fat.c
+ * FatDereferenceFcb), so a LATER open of the same file refills the cache from
+ * disk and reads the bytes the view had already replaced. Everything inside
+ * one open still agrees, which is why sem_mm/file_coherence.c — one handle,
+ * held open for the whole test — cannot see it. docs/03 claimed this writeback
+ * happened at file close; nothing did it.
+ *
+ * IT IS TWO HALVES, AND THE SPLIT IS FORCED. The two constraints do not hold
+ * at the same instant:
+ *
+ *   WHAT to write can only be read BEFORE MiDecommitPages, which zeroes every
+ *   page's protection on its way out — after it, every view looks read-only;
+ *
+ *   WHEN it may be written is AFTER the VAD leaves the space's list, because
+ *   the writeback PARKS. Mm has no lock (Art. 3's uniprocessor, non-preempted
+ *   kernel is the whole of its atomicity), so a park is exactly where another
+ *   thread of the same process runs — and a still-listed VAD is one a
+ *   concurrent NtUnmapViewOfSection finds and frees underneath this one. It
+ *   must also be before the section reference is dropped, or the file object
+ *   being written through can die mid-park.
+ *
+ * So MiNoteViewWriteback measures the range while the protections exist and
+ * MiWritebackMappedView writes it from inside MiUnlinkAndFreeVad, between the
+ * two RemoveEntryLists and the first ObDereferenceObject. Neither the naive
+ * "flush in MiUnmapView before MiDeleteMappedVad" (a use-after-free and a
+ * double free) nor "flush in MiUnlinkAndFreeVad and read pageProtect there"
+ * (silently writes back nothing) is correct; both were built and measured.
+ *
+ * WHICH views: MipViewBackingFile's question. A private copy (a WRITECOPY
+ * data view) owns its frames and must write nothing back, and a read-only
+ * view has nothing to carry — pinned, in that order, by
+ * sem_mm/view_close_reopen.c cases 4 and 5. On a SHARED view the writecopy
+ * flavours ARE writable: the oracle grants PAGE_WRITECOPY on one and realizes
+ * it as a writable shared mapping (MiProtectVirtualMemory's shared-view gate
+ * carries the citation), so the predicate is MiProtectToPteBits's own
+ * `writable` rather than a PAGE_READWRITE test. NtFlushVirtualMemory
+ * deliberately does not scope by protection at all: an explicit flush writes
+ * the range the CALLER named, which is what the oracle's msync does with it.
+ */
+static void MiNoteViewWriteback(PMI_VAD vad)
+{
+    vad->flushLength = 0;
+    if (MipViewBackingFile(vad) == 0)
+    {
+        return;
+    }
+    /* First and last write-permitting page: a mostly-read-only view pays only
+     * for the part a store could have reached. Writing a CLEAN page back is
+     * harmless — the cache holds the file's own bytes — so one run rather than
+     * every run is precision enough, and it is one pair of numbers to carry. */
+    ULONG pages = MiVadPageCount(vad);
+    ULONG first = pages;
+    ULONG last = 0;
+    for (ULONG index = 0; index < pages; index++)
+    {
+        int present, canWrite, executable;
+        MiProtectToPteBits(vad->pageProtect[index], &present, &canWrite, &executable);
+        if (canWrite)
+        {
+            if (first == pages)
+            {
+                first = index;
+            }
+            last = index;
+        }
+    }
+    if (first == pages)
+    {
+        return; /* nothing in this view was ever write-permitting */
+    }
+    vad->flushOffset = vad->sectionOffset + (uint64_t)first * PAGE_SIZE;
+    vad->flushLength = (uint64_t)(last - first + 1) * PAGE_SIZE;
+}
+
+/* The writeback's status is dropped, and that is the NT shape rather than an
+ * oversight: an unmap has nowhere to report a device error to, and the view is
+ * gone by the time anyone could ask. A failing device surfaces on the paths
+ * that DO return a status (NtFlushBuffersFile, NtFlushVirtualMemory). */
+static void MiWritebackMappedView(PMI_VAD vad)
+{
+    if (vad->flushLength == 0)
+    {
+        return;
+    }
+    PVOID fileObject = MipViewBackingFile(vad);
+    ASSERT(fileObject != 0); /* the note ran on this same VAD */
+    IoWritebackSectionRange(fileObject, vad->flushOffset, vad->flushLength);
+    vad->flushLength = 0;
+}
+
 static void MiUnlinkAndFreeVad(PMI_VAD vad)
 {
     RemoveEntryList(&vad->listEntry);
@@ -653,6 +781,10 @@ static void MiUnlinkAndFreeVad(PMI_VAD vad)
      * is about to be freed, and a private VAD (linked to itself) is
      * unaffected. */
     RemoveEntryList(&vad->sectionLink);
+    /* Both lists left and no reference dropped yet: the one window in which
+     * the writeback above may park (its comment has the argument). Zero for
+     * every VAD MiNoteViewWriteback did not mark, which is every private one. */
+    MiWritebackMappedView(vad);
     if (vad->master != 0)
     {
         MiDereferenceImageMaster(vad->master); /* the view's pin on the master */
@@ -695,6 +827,8 @@ static PMI_VAD MiCreateVad(uint64_t base, uint64_t size, ULONG allocationProtect
     vad->pagePrivate = 0;
     vad->sectionOffset = 0;
     vad->placeholder = 0;
+    vad->flushOffset = 0;
+    vad->flushLength = 0;
     vad->pageProtect = MiAllocatePool((size / PAGE_SIZE) * sizeof(ULONG));
     if (vad->pageProtect == 0)
     {
@@ -841,8 +975,11 @@ void MiDeleteAddressSpace(PMI_ADDRESS_SPACE space)
     while (!IsListEmpty(&space->vadListHead))
     {
         PMI_VAD vad = CONTAINING_RECORD(space->vadListHead.Flink, MI_VAD, listEntry);
-        MiDecommitPages(space, vad, vad->base, vad->size);
-        MiUnlinkAndFreeVad(vad);
+        /* Was the same two lines open-coded. It is MiDeleteMappedVad's body,
+         * and the writeback note belongs to every VAD death rather than to
+         * the unmap syscall's — a view the process never unmapped dies here
+         * instead, and an exiting process is the commonest way one ends. */
+        MiDeleteMappedVad(space, vad);
     }
     MiDeleteUserPml4(space->pml4Physical);
     space->pml4Physical = 0;
@@ -2078,6 +2215,10 @@ void MiAssertNoWritableMasterPte(PMI_ADDRESS_SPACE space)
 
 void MiDeleteMappedVad(PMI_ADDRESS_SPACE space, PMI_VAD vad)
 {
+    /* Measure the file range this view still owes BEFORE the decommit below
+     * zeroes every page's protection; MiUnlinkAndFreeVad writes it, from the
+     * one place it is safe to park. The pair's comment has the argument. */
+    MiNoteViewWriteback(vad);
     MiDecommitPages(space, vad, vad->base, vad->size);
     MiUnlinkAndFreeVad(vad);
 }
@@ -2459,11 +2600,6 @@ NTSTATUS NtResetWriteWatch(HANDLE process, PVOID baseAddress, SIZE_T size)
 
 /* --- flush/lock/prefetch (CUI-7) --------------------------------------------- */
 
-/* Implemented by the Io manager (kernel/io/rw.c) — the same seam direction
- * as IopBuildSectionBacking (mm/section.c): write the file's cached byte
- * range through to the device. */
-NTSTATUS IoWritebackSectionRange(PVOID fileObjectBody, uint64_t offset, uint64_t length);
-
 NTSTATUS NtFlushVirtualMemory(HANDLE process, LPCVOID *addressInOut, SIZE_T *sizeInOut,
                               IO_STATUS_BLOCK *ioStatusBlock)
 {
@@ -2499,25 +2635,24 @@ NTSTATUS NtFlushVirtualMemory(HANDLE process, LPCVOID *addressInOut, SIZE_T *siz
 
     /* A shared file-backed view's stores live in the file's page cache;
      * route the covered bytes to the FS writeback (the IopFlushBuffers
-     * seam). With write-through FAT this is belt — and it retires the
-     * flush half of the docs/03 mapped-view deferred-writeback note for
-     * this path. Private/image/anonymous views have no file to flush. */
-    if (vad->type == MEM_MAPPED && !vad->ownsFrames && vad->sectionBody != 0)
+     * seam). Which views have a file to flush is MipViewBackingFile's
+     * question, shared with MiWritebackMappedView so the two writeback
+     * sites cannot drift on it. What is deliberately NOT shared is the
+     * per-page scoping: an explicit flush writes the range the CALLER
+     * named, as the oracle's msync does, where the unmap-time writeback
+     * writes only what the view could have stored to. */
+    PVOID fileObject = MipViewBackingFile(vad);
+    if (fileObject != 0)
     {
-        PMI_SECTION section = vad->sectionBody;
-        if (section->fileObject != 0 && section->cache != 0)
+        uint64_t span = size;
+        if (addr + span > vad->base + vad->size)
         {
-            uint64_t span = size;
-            if (addr + span > vad->base + vad->size)
-            {
-                span = vad->base + vad->size - addr;
-            }
-            status = IoWritebackSectionRange(section->fileObject,
-                                             vad->sectionOffset + (addr - vad->base), span);
-            if (!NT_SUCCESS(status))
-            {
-                return STATUS_NOT_MAPPED_DATA; /* the oracle's msync-failure arm */
-            }
+            span = vad->base + vad->size - addr;
+        }
+        status = IoWritebackSectionRange(fileObject, vad->sectionOffset + (addr - vad->base), span);
+        if (!NT_SUCCESS(status))
+        {
+            return STATUS_NOT_MAPPED_DATA; /* the oracle's msync-failure arm */
         }
     }
     return STATUS_SUCCESS;

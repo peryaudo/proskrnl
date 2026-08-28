@@ -100,9 +100,33 @@ them, and excluded from the differential fuzzer's op model):
 - **FSInfo free-count is not maintained** (the FAT spec marks it advisory and requires
   validation anyway).
 - **Mapped-view dirty pages** are written back on `NtFlushBuffersFile`, on
-  `NtFlushVirtualMemory` over the view's covered file range (CUI-7), and at file close —
-  not per-store (unobservable without a reboot mid-test; `NtWriteFile` itself writes
-  through immediately).
+  `NtFlushVirtualMemory` over the view's covered file range (CUI-7), and **when the view
+  itself goes away** — `MiWritebackMappedView`, called from `MiUnlinkAndFreeVad`, which
+  every path that destroys a VAD comes through (an explicit unmap, and an exiting
+  process's address-space teardown). Not per-store, and the residual deferral (store →
+  unmap) stays **unobservable**, which is what Art. 3 asks of an entry here: while any
+  view exists the section holds a reference to the `FILE_OBJECT`
+  (`kernel/mm/section.c` `IopBuildSectionBacking`), which keeps the FCB and its page
+  cache alive, so a concurrent open of the same file reads the *same frames* and sees
+  every store already. `NtWriteFile` writes through immediately, so only a mapped store
+  can ever be behind.
+
+  **This line used to say "and at file close", and nothing did it.** That was not a
+  harmless overclaim: the page cache hangs off the FCB and the FCB dies with the file's
+  last handle (`fs/fat32/fat.c FatDereferenceFcb`), so a shared writable view's stores
+  were dropped and a LATER open of the same file read the pre-view bytes back off the
+  disk. Every assertion *inside one open* still agreed, which is why
+  `sem_mm/file_coherence.c` — which never closes the file — was green throughout. It cost
+  `kernel32:resource` 41 assertions and `kernel32:actctx` 34, both through
+  `EndUpdateResource`, which writes a module's new `.rsrc` section through a
+  `PAGE_READWRITE` view and copies the file back (`dlls/kernel32/resource.c`
+  `write_raw_resources`). Pinned by `tests/ntapi/sem_mm/view_close_reopen.c`, whose cases
+  4 and 5 pin the two inverses that matter: a **WRITECOPY** view's stores must stay
+  private, and a read-only view must change nothing. On a SHARED view the writecopy
+  flavours are themselves writable (the oracle grants `PAGE_WRITECOPY` on one and
+  realizes it as a writable shared mapping — `MiProtectVirtualMemory`'s shared-view
+  gate), so the writeback predicate is `MiProtectToPteBits`'s `writable`, not
+  `PAGE_READWRITE`.
 
 ### The 8.3 alias's leading run: dots are stripped, a space is not
 
