@@ -1481,20 +1481,69 @@ kernel32_test.exe:power
 #     docs/21 W9's shared-cause question, and NOT with W9's hypothesis: the
 #     SEC_IMAGE path was never involved.
 #
-#     WHAT IS LEFT IS ONE CAUSE, AND IT IS THE OTHER READING OF "write a PE,
-#     then map it". All 21 are test_mui and all of them follow from
-#     resource.c:680 — GetFileMUIInfo on the module create_test_dll() just
-#     wrote answering 193 (ERROR_BAD_EXE_FORMAT), BEFORE any resource update
-#     touches it. The file is the hand-built `dll_image` struct at
-#     resource.c:525 — a DOS header, an NT header and one section, no
-#     imports, no entry point — so what is rejected is a MINIMAL PE, not a
-#     rewritten one. Everything after it is that value cascading: :698-:710
-#     and :749-:754 read back the 0xfe fill (-16843010), and the run then
-#     dies 0xc0000005 at `buf + info->dwLanguageNameOffset` with
-#     dwLanguageNameOffset = 0xfefefefe (docs/21 §4 trap 3 — the crash is the
-#     cascade, the first failing ok() is the bug). So the count is STILL a
-#     lower bound: nothing past resource.c:754 has been measured.
-# TODO: Implement
+#     WHAT WAS LEFT WAS ONE CAUSE, AND IT IS NOW FIXED: 21 -> 0. All 21 were
+#     test_mui and all of them followed from resource.c:680 — GetFileMUIInfo
+#     on the module create_test_dll() had just written answering 193
+#     (ERROR_BAD_EXE_FORMAT), BEFORE any resource update touches it. The file
+#     is the hand-built `dll_image` struct at resource.c:523 — a DOS header,
+#     an NT header and one section, no imports, no entry point — so what was
+#     rejected was a MINIMAL PE, not a rewritten one. Everything after it was
+#     that value cascading: :698-:710 and :749-:754 read back the 0xfe fill
+#     (-16843010), and the run then died 0xc0000005 at
+#     `buf + info->dwLanguageNameOffset` with dwLanguageNameOffset =
+#     0xfefefefe (docs/21 §4 trap 3 — the crash is the cascade, the first
+#     failing ok() is the bug).
+#
+#     TWO RULES ABOUT A HAND-WRITTEN PE, both in kernel/mm/pecoff.c and both
+#     the pinned oracle's:
+#       - `dll_image` spells SizeOfHeaders as sizeof(IMAGE_DOS_HEADER) +
+#         sizeof(IMAGE_NT_HEADERS), so its section header starts on the byte
+#         AFTER the headers end. MiParseImage bounded the table by
+#         SizeOfHeaders and refused the image; the oracle bounds it by the
+#         IMAGE and GROWS the header region to cover it instead
+#         (server/mapping.c get_image_params). That refusal is what
+#         LOAD_LIBRARY_AS_IMAGE_RESOURCE handed up as 193.
+#       - its section then declares SizeOfRawData 0x1000 with
+#         PointerToRawData ZERO. An extent with no offset names no file
+#         bytes (dlls/ntdll/unix/virtual.c map_image_into_view:
+#         `if (!sec[i].PointerToRawData || !file_size) continue;`), and
+#         believing the extent copied the image's own DOS header into the
+#         .rsrc page.
+#     docs/21 W9, docs/03 "What a PE's headers and raw offsets mean to an
+#     image section", pinned by tests/ntapi/sem_mm/image_section_table.c.
+#
+#     THE 21 WERE A LOWER BOUND and the fix cleared what was behind the stop
+#     as well: the pair now runs to its summary line and reports 559 tests
+#     executed, 0 failures, exit 0 — the same 559/0 the oracle reports.
+#
+#     SO WHY IS IT STILL COMMENTED OUT? Not for anything this pair does.
+#     ACTIVATING IT RELIABLY TRIPS ISSUE #237, the pre-existing flake in the
+#     leg's OTHER arm: the audio boot can come up with no winmm devices and
+#     REGDB_E_CLASSNOTREG, which is mmdevapi:propstore crashing 0xc0000005
+#     plus winmm:{capture,mixer,wave} at 4 failures each. Measured over 17
+#     full `make fulltest` runs on one 32-core box, alternating trees:
+#
+#       manifest unchanged (kernel fix only)   0 red / 2
+#       manifest unchanged (main @ 37fd09a)    1 red / 6
+#       this pair ACTIVE                       7 red / 9
+#
+#     The pair itself passes in every one of those runs. What changes is the
+#     CUI arm's shape — it now runs 559 more tests instead of crashing out —
+#     so the audio boot, which runs after it in the same leg, lands somewhere
+#     else in a loaded 36-leg schedule and #237's guest-side COM/service
+#     registration race fires. Nothing in the fix above touches audio, COM or
+#     the registry, and the kernel-only row is what says so.
+#
+#     Leaving it active would make `make fulltest` red most of the time for a
+#     reason that is not this pair's — the trade this file's header already
+#     settled for kernel32:version, and settles the same way here: coverage
+#     lost to a parked pair is visible in this file, attention lost to a red
+#     gate is not.
+#
+#     WHAT UN-PARKS IT: issue #237 being fixed. Nothing else — re-measure the
+#     pair by all means, but it has been 559/0 on both halves since this
+#     entry was written, and it is the audio arm that decides.
+# TODO: Un-park once #237 is fixed (the pair itself is green)
 # kernel32_test.exe:resource
 # PROSKRNL-FLAKY BY A RACE IN THE TEST, NOT A KERNEL GAP — and its real
 #     failures are FIXED. The 15 it used to have are gone: the

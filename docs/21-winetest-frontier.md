@@ -1491,7 +1491,7 @@ mask, where mailslots are a device, a create path and two info classes. The
 judgement the human still owns is whether the gate justifies THAT, not whether
 it justifies anything.
 
-### W9 — The write-then-load-an-image cluster (**TRIAGED; the shared cause is FIXED — `kernel32:actctx` 39 → 5, `kernel32:resource` 62 → 21**)
+### W9 — The write-then-load-an-image cluster (**`kernel32:resource` is GREEN — 62 → 21 → 0, but parked on issue #237 rather than activated; `kernel32:actctx` 39 → 5**)
 
 `kernel32:actctx`, `kernel32:resource`, and part of `ntdll:rtl`. All three
 write a PE to disk at runtime and then map or execute it, and all three
@@ -1526,23 +1526,73 @@ there being one cause and wrong about which layer, and the wrong layer is where
 an hour would have gone. And a `docs/03` line that describes a behaviour nothing
 implements is worse than no line: it is the exact place a reader stops looking.
 
-**What is left is per-pair, and neither residue is the shared cause.**
+**What was left was per-pair, neither residue was the shared cause, and one of
+the two is now closed.**
 
 - `kernel32:actctx`, 5: `:3151` ×3 (`LoadLibraryExA` → `ERROR_FILE_NOT_FOUND`),
   `:3138` (`CreateActCtxA` succeeding where a refusal is wanted), `:3955`
   (`CreateActCtxA` → `ERROR_SXS_CANT_GEN_ACTCTX`). The run reaches its summary
   line, so 5 is a real count and not a lower bound.
-- `kernel32:resource`, 21: **all of them `test_mui`, all downstream of
-  `resource.c:680`** — `GetFileMUIInfo` answering `193`
-  (`ERROR_BAD_EXE_FORMAT`) for the module `create_test_dll()` has just written,
-  *before* any resource update touches it. That module is the hand-built
-  `dll_image` struct at `resource.c:525`: a DOS header, an NT header, one
-  section, no imports and no entry point. So this residue really is a
-  **write-then-map-an-image** item — a minimal PE the image path refuses — and it
-  is the one piece of W9's original framing that survived. The pair still ends
-  in `0xc0000005` (the test indexes `buf` by the `0xfe`-filled
-  `dwLanguageNameOffset`), so 21 remains a lower bound: nothing past
-  `resource.c:754` has ever been measured.
+- `kernel32:resource`, 21 → **0 and GREEN** (parked anyway — see the end of this
+  entry): all of them were
+  `test_mui`, all downstream of `resource.c:680` — `GetFileMUIInfo` answering
+  `193` (`ERROR_BAD_EXE_FORMAT`) for the module `create_test_dll()` has just
+  written, *before* any resource update touches it. That module is the
+  hand-built `dll_image` struct at `resource.c:523`: a DOS header, an NT
+  header, one section, no imports and no entry point. So this residue really
+  was a **write-then-map-an-image** item — a minimal PE the image path refused
+  — and it is the one piece of W9's original framing that survived.
+
+  **The refusal was about the SECTION TABLE, not about anything the image
+  lacked.** `dll_image` writes `SizeOfHeaders` as `sizeof(IMAGE_DOS_HEADER) +
+  sizeof(IMAGE_NT_HEADERS)`, so its single section header begins on the byte
+  after the declared header region ends. `kernel/mm/pecoff.c` bounded the table
+  by `SizeOfHeaders` and returned `STATUS_INVALID_IMAGE_FORMAT`. The pinned
+  oracle bounds it by the IMAGE and, where it overruns, **grows the header
+  region to cover it** (`server/mapping.c get_image_params`, the "load the
+  section headers" block: `if (pos + size > map_size) return
+  STATUS_INVALID_FILE_FOR_SECTION;` then `if (pos + size > header_size)
+  header_size = pos + size;`). Both halves are observable from ring 3 — the
+  second because `dlls/ntdll/unix/virtual.c map_image_into_view` zeroes the
+  mapped view from `header_size` to the end of the header page, so whether the
+  section table is readable in the view IS whether the header region grew.
+
+  **A SECOND rule fell out of pinning the first, and it was in the same
+  section header.** `dll_image`'s section declares `VirtualSize` 0,
+  `SizeOfRawData` 0x1000 and `PointerToRawData` **0** — an extent with no
+  offset. `SizeOfRawData` still gives the segment its extent, but the oracle
+  maps no file bytes for such a section at all (`map_image_into_view`:
+  `if (!sec[i].PointerToRawData || !file_size) continue;`), where `MiParseImage`
+  believed the extent and copied file offset 0 — the image's own DOS header —
+  into the `.rsrc` page. Measured, not reasoned: the pin read back `4d 5a` where
+  the oracle reads zeroes. It did not change this pair's verdict (the bytes it
+  put there happen to parse as an empty resource directory), which is exactly
+  why it needed a pin rather than a winetest to find it. Both rules are in
+  `MiParseImage`, recorded in `docs/03` "What a PE's headers and raw offsets
+  mean to an image section" and pinned by
+  `tests/ntapi/sem_mm/image_section_table.c`.
+
+  **And 21 was a lower bound, which paid off in the usual direction for once.**
+  The pair ended `0xc0000005` (the test indexes `buf` by the `0xfe`-filled
+  `dwLanguageNameOffset`), so nothing past `resource.c:754` had ever been
+  measured — and with the stop removed the whole tail was already correct: 559
+  tests executed, 0 failures, exit 0, the same numbers the oracle reports.
+  §4 trap 2 says only that removing a stop is what tells you which case you are
+  in; this is the case where the answer is "none".
+
+  **It is nevertheless still commented out, and not for anything it does.**
+  Activating it reliably trips issue #237 — the pre-existing flake in the
+  `winetest` leg's OTHER arm, where the audio boot comes up with no `winmm`
+  devices and `REGDB_E_CLASSNOTREG`. Over 17 full `make fulltest` runs on one
+  32-core box, alternating trees: the kernel fix alone 0 red / 2, unmodified
+  `main` 1 red / 6, this pair **active 7 red / 9** — with the pair itself
+  passing in all nine. What moves is the CUI arm's shape (559 more tests
+  instead of an early crash), so the audio boot lands elsewhere in a loaded
+  36-leg schedule. Nothing in the fix touches audio, COM or the registry, and
+  the kernel-only row is what says so. Leaving it active would make the suite
+  red most of the time for another pair's bug, which is the trade the manifest
+  header already settled for `kernel32:version`. **#237 is what un-parks it**,
+  and this is now that issue's most reliable reproduction.
 
 `ntdll:rtl`'s share of this item was always a different thing (`comctl32` cannot
 be on the CUI volume) and it now lives in `manifest-gui.txt`.
@@ -3550,6 +3600,10 @@ Pairs and framings that will consume effort and unblock nothing.
    **The fourth measurement came back 1 → 1** (`kernel32:virtual`'s crash,
    W20), so the rule of thumb is a prior and not a law — what does not change
    is that only removing the stop can tell you which case you are in.
+   **The fifth went to ZERO**: `kernel32:resource`'s `0xc0000005` was hiding
+   nothing at all — 21 → 0 across 559 executed tests, and the pair is green
+   (W9). Read together, the five say the prior is worth holding when you
+   SCHEDULE an item and worth nothing when you PREDICT its outcome.
 
    **`ntdll:sync` is the nastiest spelling so far, because the pair APPEARED
    to have reported** (W10). Its block read "prints its own summary — 0 tests
@@ -3567,7 +3621,11 @@ Pairs and framings that will consume effort and unblock nothing.
    the crash" does not make it one.** `kernel32:volume` and
    `kernel32:resource` both `0xc0000005` *after* a run of `ok()` failures
    where an API had already returned NULL. Chasing the crash rather than
-   the first failing `ok()` wastes the day. This trap used to name
+   the first failing `ok()` wastes the day. **`kernel32:resource` has since
+   been closed exactly that way** (W9): its fault was `buf` indexed by an
+   `0xfe`-filled `dwLanguageNameOffset`, twenty assertions downstream of the
+   one call that failed, and fixing that call took the pair to zero — the
+   fault site itself was never touched. This trap used to name
    `ntdll:unwind` as the counter-example, "the crash IS the finding",
    precisely because it had zero failed assertions before it. **Measured, it
    was a cascade too** — of a single dropped allocation attribute that made a
