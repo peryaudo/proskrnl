@@ -36,8 +36,8 @@ int SmssConsoleAvailable(void)
     return SmssConsoleReady;
 }
 
-NTSTATUS SmssSpawn(const WCHAR *ntPath, const WCHAR *cmdline, int console, HANDLE *processOut,
-                   HANDLE *threadOut)
+NTSTATUS SmssSpawn(const WCHAR *ntPath, const WCHAR *cmdline, int console,
+                   const WCHAR *currentDirectory, HANDLE *processOut, HANDLE *threadOut)
 {
     NTSTATUS status;
     USHORT chars = 0;
@@ -64,13 +64,21 @@ NTSTATUS SmssSpawn(const WCHAR *ntPath, const WCHAR *cmdline, int console, HANDL
         }
         dos[n] = 0;
 
-        UNICODE_STRING image, cmd;
+        UNICODE_STRING image, cmd, cwd;
         SmssInitUnicodeString(&image, dos);
         SmssInitUnicodeString(&cmd, cmdline != 0 ? cmdline : dos);
+        /* The directory the child starts in. A caller that names none
+         * inherits smss's own, which is the kernel default
+         * C:\windows\system32\ (kernel/ps/peb.c PspBuildDefaultParams) --
+         * the same way a child of the oracle's runner inherits whatever
+         * directory the runner was `cd`'d into. */
+        if (currentDirectory != 0)
+            SmssInitUnicodeString(&cwd, currentDirectory);
         status = RtlCreateProcessParametersEx(
-            &params, &image, &SmssOwnParams->DllPath, &SmssOwnParams->CurrentDirectory.DosPath,
-            &cmd, SmssOwnParams->Environment, &image /* window title = image, the kernel rule */, 0,
-            0, 0, PROCESS_PARAMS_FLAG_NORMALIZED);
+            &params, &image, &SmssOwnParams->DllPath,
+            currentDirectory != 0 ? &cwd : &SmssOwnParams->CurrentDirectory.DosPath, &cmd,
+            SmssOwnParams->Environment, &image /* window title = image, the kernel rule */, 0, 0, 0,
+            PROCESS_PARAMS_FLAG_NORMALIZED);
         if (status != STATUS_SUCCESS)
             return status;
         if (console == 1)
@@ -149,11 +157,11 @@ NTSTATUS SmssSpawn(const WCHAR *ntPath, const WCHAR *cmdline, int console, HANDL
     return STATUS_SUCCESS;
 }
 
-NTSTATUS SmssRun(const WCHAR *ntPath, const WCHAR *cmdline, int console, ULONG timeoutMs,
-                 NTSTATUS *exitOut)
+NTSTATUS SmssRun(const WCHAR *ntPath, const WCHAR *cmdline, int console,
+                 const WCHAR *currentDirectory, ULONG timeoutMs, NTSTATUS *exitOut)
 {
     HANDLE process = 0, thread = 0;
-    NTSTATUS status = SmssSpawn(ntPath, cmdline, console, &process, &thread);
+    NTSTATUS status = SmssSpawn(ntPath, cmdline, console, currentDirectory, &process, &thread);
     if (status != STATUS_SUCCESS)
         return status;
 
@@ -211,7 +219,7 @@ void SmssStartWineServer(void)
      * quietly come up without a desktop. */
     static const WCHAR path[] = WSTR("\\??\\C:\\windows\\system32\\wineserver-lite.exe");
     static HANDLE SmssWineServerProcess, SmssWineServerThread;
-    NTSTATUS status = SmssSpawn(path, 0, 0, &SmssWineServerProcess, &SmssWineServerThread);
+    NTSTATUS status = SmssSpawn(path, 0, 0, 0, &SmssWineServerProcess, &SmssWineServerThread);
     if (status != STATUS_SUCCESS)
         SmssPrintf("[KTEST] gui3 server FAIL (create=%x)\n", SMSS_HEX(status));
 }
