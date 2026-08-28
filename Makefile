@@ -1578,6 +1578,32 @@ $(WINESTRIP)/common-controls.manifest: third_party/wine/dlls/comctl32_v6/comctl3
 	@mkdir -p $(dir $@)
 	sed 's/processorArchitecture=""/processorArchitecture="amd64"/' $< > $@
 
+# The Microsoft.VC90.CRT SxS assembly, the same shape one assembly over: the
+# manifest is msvcr90's own (third_party/wine/dlls/msvcr90/msvcr90.manifest,
+# which fakedll.c extracts from the fake dll's RT_MANIFEST and writes out with
+# the arch filled in), and the three files it NAMES ride in the assembly
+# directory beside it. Wine's own prefix gets these from the fakedll pass over
+# msvcr90/msvcp90/msvcm90; ours cannot, for the reason the block above gives.
+#
+# The consumer is kernel32:actctx's test_builtin_sxs (actctx.c:3955), which
+# builds a manifest depending on microsoft.vc90.crt and then LoadLibrary's
+# msvcp90/msvcr90 through it, asserting both resolve UNDER C:\Windows\WinSxS.
+# Absent, CreateActCtxA answers ERROR_SXS_CANT_GEN_ACTCTX (14001) -- the same
+# number the applets' comctl32 case above produces, and for the same reason.
+# They are deliberately NOT in system32: the assertion is about the redirected
+# path, so a system32 copy would satisfy the load and fail the check.
+SXS_VC90_DIR := windows/winsxs/amd64_microsoft.vc90.crt_1fc8b3b9a1e18e3b_9.0.30729.6161_none_deadbeef
+SXS_VC90_NAMES := msvcr90 msvcp90 msvcm90
+$(foreach d,$(SXS_VC90_NAMES),$(eval $(call WINESTRIP_RULE,$(d))))
+$(WINESTRIP)/vc90-crt.manifest: third_party/wine/dlls/msvcr90/msvcr90.manifest
+	@mkdir -p $(dir $@)
+	sed 's/processorArchitecture=""/processorArchitecture="amd64"/' $< > $@
+
+SXSFILES := $(foreach d,$(SXS_VC90_NAMES),win:$(WINESTRIP)/$(d).dll=$(SXS_VC90_DIR)/$(d).dll) \
+            win:$(WINESTRIP)/vc90-crt.manifest=windows/winsxs/manifests/$(notdir $(SXS_VC90_DIR)).manifest
+SXS_PAYLOAD := $(foreach d,$(SXS_VC90_NAMES),$(WINESTRIP)/$(d).dll) \
+               $(WINESTRIP)/vc90-crt.manifest
+
 # winemine rides along in system32 (NOT the image root -- C:\winemine.exe
 # is the GUI-2 boot trigger, kernel/init/main.c KiRunGui2).
 APPLETFILES := $(foreach d,$(WINESTRIP_APPLET_NAMES),win:$(WINESTRIP)/$(d).dll=windows/system32/$(d).dll) \
@@ -1682,7 +1708,16 @@ EXPLORER_EXE := $(WINESTRIP)/explorer.exe
 $(eval $(call WINESTRIP_EXE_RULE,explorer))
 $(eval $(call WINESTRIP_RULE,atl100))
 
+# TWO copies of explorer.exe, because wine.inf installs two: `10,,explorer.exe`
+# (dirid 10 = the Windows directory) beside `11,,explorer.exe` (dirid 11 =
+# system32), third_party/wine/loader/wine.inf.in [DefaultInstall.Services] copy
+# sections. system32 is the one win32u's auto-launch hardcodes; C:\windows is
+# the one a PROGRAM names, and kernel32:actctx names it three times
+# (actctx.c:3151, LoadLibraryExA("C:\\windows\\explorer.exe") as a data file).
+# The oracle's prefix has both, so an image with only one reads as a kernel
+# divergence -- docs/21 §4 trap 6.
 SHELLFILES := win:$(EXPLORER_EXE)=windows/system32/explorer.exe \
+              win:$(EXPLORER_EXE)=windows/explorer.exe \
               win:$(WINESTRIP)/atl100.dll=windows/system32/atl100.dll
 SHELL_PAYLOAD := $(EXPLORER_EXE) $(WINESTRIP)/atl100.dll
 
@@ -1812,6 +1847,7 @@ FULLFILES := $(GUISTACKFILES) \
              win:$(TASKLIST)=windows/system32/tasklist.exe \
              win:$(TASKKILL)=windows/system32/taskkill.exe \
              $(APPLETFILES) \
+             $(SXSFILES) \
              $(SHELLFILES) \
              $(WOW64GUESTFILES) $(WOW64HOSTFILES) $(WOW64GUIFILES) \
              $(AUDIOFILES) $(SYSINIFILES) $(WOW64AUDIOFILES)
@@ -1819,6 +1855,7 @@ FULLFILES := $(GUISTACKFILES) \
 FULL_PAYLOAD := $(GUISTACK_PAYLOAD) $(CMD) $(TASKLIST) $(TASKKILL) \
                 $(WINESTRIP_APPLET_DLLS) $(WINESTRIP_APPLET_EXES) $(WINEMINE) \
                 $(WINESTRIP)/comctl32_v6.dll $(WINESTRIP)/common-controls.manifest \
+                $(SXS_PAYLOAD) \
                 $(SHELL_PAYLOAD) \
                 $(WOW64_GUEST_PAYLOAD) $(WOW64_GUI_PAYLOAD) \
                 $(AUDIO_PAYLOAD) $(SYSINI_STAMP) $(WOW64_AUDIO_PAYLOAD)
