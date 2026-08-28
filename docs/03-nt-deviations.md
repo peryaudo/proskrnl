@@ -882,6 +882,23 @@ boundary symbols winebuild would have emitted supplied by
   the page cache holds every MB-scale test binary's pages for the whole
   sweep. A per-process page leak was ruled out empirically (one
   child-spawning pair run ten times in one boot).
+- **Two more things `wine.inf` puts in a prefix that the image now bakes by
+  hand**, both found by `kernel32:actctx` and both invisible from the
+  assertion text (docs/21 §4 trap 6):
+  `C:\windows\explorer.exe` — `wine.inf` installs explorer at BOTH dirids
+  (`10,,explorer.exe` beside `11,,explorer.exe`), where the bake had only the
+  system32 copy `win32u`'s desktop auto-launch hardcodes, and a program that
+  names `C:\windows\explorer.exe` got `ERROR_FILE_NOT_FOUND`; and the
+  **`Microsoft.VC90.CRT` side-by-side assembly**, which Wine's prefix gets
+  from `setupapi`'s fakedll pass over msvcr90/msvcp90/msvcm90
+  (`dlls/setupapi/fakedll.c` `create_manifest` / `create_winsxs_dll_path`).
+  The image cannot run that pass — the fakedll sources live in the build
+  tree — so it is staged the same way the applets' Common-Controls assembly
+  already was: the manifest is `msvcr90.manifest` with `processorArchitecture`
+  filled in, and the three DLLs it NAMES sit in the assembly directory. They
+  are deliberately NOT in system32, because what the winetest asserts is that
+  both resolve *under* `C:\Windows\WinSxS`, which a system32 copy would
+  satisfy the load and fail the check for.
 - **And it is the SAME machine `make run` boots — amended.** The leg's
   image was assembled from its own hand-written list (the run.sh proskrnl
   set: ten DLLs, smss, conhost, cmd) and had drifted into a shorter machine
