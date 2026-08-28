@@ -862,6 +862,20 @@ boundary symbols winebuild would have emitted supplied by
   cannot be reaped (no foreign terminate, above) and owns the single
   global console, so the sweep ABORTS on timeout rather than running more
   pairs against a wedged console.
+- **And it runs each pair FROM `C:\wtests`, because the oracle half does.**
+  `tests/run/run.sh` does `cd "$BUILD/wtests"` before every oracle pair; the
+  guest sweep used to hand each pair smss's own directory, which is the
+  kernel default `C:\windows\system32\` (`kernel/ps/peb.c`
+  `PspBuildDefaultParams`). That is not cosmetic: a winetest reads its own
+  working directory (`GetCurrentDirectoryW`) and builds scratch files under
+  it, so every pair in the sweep was writing into the system directory, and
+  `kernel32:actctx:3138` — which asserts that a RELATIVE dll name does not
+  resolve into an activation context — failed for no reason but a
+  `shell32.dll` sitting in the directory it happened to run in.
+  `user/smss/session.c` names the directory now, through a
+  `currentDirectory` argument on `SmssSpawn` (0 = inherit smss's own) rather
+  than a second spawn path. Nothing else names one: only the sweep has an
+  ORACLE half whose directory it has to match.
 - **The wtest image provisions instead of managing**: the FULL nls set is
   baked (a missing `c_932.nls` reads as a mass CRT/codepage divergence),
   and the leg boots with 1 GiB of guest RAM — no eviction (Art. 3) means

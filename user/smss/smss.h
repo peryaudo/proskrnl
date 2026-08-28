@@ -101,15 +101,20 @@ extern RTL_USER_PROCESS_PARAMETERS *SmssOwnParams;
  * runner shape — launch.c says why), 1 = attach to the BOOT console (valid
  * only once SmssStartConhost reported the server up), 2 = the client
  * allocates its own console (the CONSOLE_HANDLE_ALLOC sentinel; a CUI
- * child's kernelbase spawns its own windowed conhost). */
-NTSTATUS SmssSpawn(const WCHAR *ntPath, const WCHAR *cmdline, int console, HANDLE *processOut,
-                   HANDLE *threadOut);
+ * child's kernelbase spawns its own windowed conhost).
+ *
+ * `currentDirectory` is the DOS directory the child starts in; 0 means
+ * smss's own, which is the kernel default C:\windows\system32\. Only the
+ * winetest sweep names one, because only it has an ORACLE half whose
+ * directory it must match (session.c SessionFlowWtest). */
+NTSTATUS SmssSpawn(const WCHAR *ntPath, const WCHAR *cmdline, int console,
+                   const WCHAR *currentDirectory, HANDLE *processOut, HANDLE *threadOut);
 /* Spawn and wait. timeoutMs 0 = forever. On STATUS_TIMEOUT the child is
  * STILL RUNNING and cannot be reaped (no foreign terminate — docs/03); its
  * handles are deliberately leaked and the caller must not run further
  * console clients. */
-NTSTATUS SmssRun(const WCHAR *ntPath, const WCHAR *cmdline, int console, ULONG timeoutMs,
-                 NTSTATUS *exitOut);
+NTSTATUS SmssRun(const WCHAR *ntPath, const WCHAR *cmdline, int console,
+                 const WCHAR *currentDirectory, ULONG timeoutMs, NTSTATUS *exitOut);
 
 /* The system servers, in dependency order: wineserver-lite (HACK-003) first
  * — anything that loads win32u is its client, including the GUI-5 windowed

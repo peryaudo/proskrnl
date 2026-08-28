@@ -213,7 +213,7 @@ static int SessionFlowM8(int registryOk)
     }
     {
         NTSTATUS exitStatus = 0;
-        NTSTATUS status = SmssRun(path, 0, 0, 0, &exitStatus);
+        NTSTATUS status = SmssRun(path, 0, 0, 0, 0, &exitStatus);
         if (status != STATUS_SUCCESS)
         {
             SmssPrintf("[KTEST] module hello.exe FAIL (create=%x)\n", SMSS_HEX(status));
@@ -264,7 +264,7 @@ static int SessionFlowM9(int abiFailures)
     else
     {
         NTSTATUS exitStatus = 0;
-        NTSTATUS status = SmssRun(path, 0, 1, 0, &exitStatus);
+        NTSTATUS status = SmssRun(path, 0, 1, 0, 0, &exitStatus);
         if (status != STATUS_SUCCESS)
         {
             SmssPrintf("[KTEST] module m9_smoke.exe FAIL (create=%x)\n", SMSS_HEX(status));
@@ -478,7 +478,7 @@ static int SessionFlowNtapi(void)
         selected++;
 
         NTSTATUS exitStatus = 0;
-        status = SmssRun(SessionNtapiPath, 0, 0, 0, &exitStatus);
+        status = SmssRun(SessionNtapiPath, 0, 0, 0, 0, &exitStatus);
         if (status != STATUS_SUCCESS)
         {
             SmssPrintf("[KTEST] module ntapi/%s FAIL (create=%x)\n", SessionNtapiName,
@@ -854,7 +854,18 @@ static int SessionFlowWtest(const WCHAR *manifestPath)
         NTSTATUS exitStatus = 0;
         ULONG timeoutMs = SessionWtestList.pairs[i].timeoutMs ? SessionWtestList.pairs[i].timeoutMs
                                                               : WTEST_TIMEOUT_MS;
-        NTSTATUS status = SmssRun(SessionWtestPath, SessionWtestCmdline, 1, timeoutMs, &exitStatus);
+        /* The pair runs FROM the directory its binary is in, because the
+         * oracle half does: tests/run/run.sh does `cd "$BUILD/wtests"`
+         * before every pair, and C:\wtests is that directory on the guest.
+         * A winetest reads its own working directory (GetCurrentDirectoryW
+         * -> actctx.c's work_dir) and builds scratch files under it, so the
+         * two halves must be given the same one or the difference reads as a
+         * kernel divergence -- kernel32:actctx:3138 asserts that a RELATIVE
+         * dll name does not resolve, which was true only because the oracle
+         * runs somewhere without a shell32.dll in it and false under the
+         * kernel default C:\windows\system32. */
+        NTSTATUS status = SmssRun(SessionWtestPath, SessionWtestCmdline, 1, WSTR("C:\\wtests\\"),
+                                  timeoutMs, &exitStatus);
         if (status == STATUS_TIMEOUT)
         {
             /* The wedged process owns the console; further pairs would be
@@ -915,7 +926,7 @@ static int SessionFlowM9Echo(void)
      * console-mode images from plain ones back when that was a property of
      * the media. */
     NTSTATUS exitStatus = 0;
-    NTSTATUS status = SmssRun(path, 0, 1, 0, &exitStatus);
+    NTSTATUS status = SmssRun(path, 0, 1, 0, 0, &exitStatus);
     int pass = status == STATUS_SUCCESS && exitStatus == 0;
     SmssPrintf("[KTEST] module m9_echo.exe %s (exit=%x)\n", pass ? "PASS" : "FAIL",
                SMSS_HEX(exitStatus));
@@ -932,7 +943,8 @@ static int SessionFlowCmdConsole(void)
      * what selects this now. */
     SmssSay("[KTEST] cmd interactive start\n");
     NTSTATUS exitStatus = 0;
-    NTSTATUS status = SmssRun(WSTR("\\??\\C:\\windows\\system32\\cmd.exe"), 0, 1, 0, &exitStatus);
+    NTSTATUS status =
+        SmssRun(WSTR("\\??\\C:\\windows\\system32\\cmd.exe"), 0, 1, 0, 0, &exitStatus);
     int pass = status == STATUS_SUCCESS && exitStatus == 0;
     SmssPrintf("[KTEST] module cmd.exe %s (exit=%x)\n", pass ? "PASS" : "FAIL",
                SMSS_HEX(exitStatus));
@@ -1161,14 +1173,14 @@ static int SessionFlowGui(void)
 
         if (leg->prologue)
         {
-            status = SmssRun(leg->prologue, 0, 0, 0, &exitStatus);
+            status = SmssRun(leg->prologue, 0, 0, 0, 0, &exitStatus);
             SmssPrintf("[KTEST] %s %s exit (status=%x, exit=%x)\n", leg->tag, leg->prologueTag,
                        SMSS_HEX(status), SMSS_HEX(exitStatus));
         }
 
         if (leg->background)
         {
-            status = SmssSpawn(leg->background, 0, 0, &SessionGuiBackground,
+            status = SmssSpawn(leg->background, 0, 0, 0, &SessionGuiBackground,
                                &SessionGuiBackgroundThread);
             if (status != STATUS_SUCCESS)
             {
@@ -1177,7 +1189,7 @@ static int SessionFlowGui(void)
             }
         }
 
-        status = SmssRun(leg->foreground, leg->foregroundCmdline, leg->foregroundConsole, 0,
+        status = SmssRun(leg->foreground, leg->foregroundCmdline, leg->foregroundConsole, 0, 0,
                          &exitStatus);
         /* Only reached if the client exited. Where it is written never to,
          * say FAIL by name rather than letting the boot fall through to a
@@ -1205,7 +1217,7 @@ static int SessionFlowWow64(void)
 {
     static const WCHAR path[] = WSTR("\\??\\C:\\hello32.exe");
     NTSTATUS exitStatus = 0;
-    NTSTATUS status = SmssRun(path, 0, 1, 0, &exitStatus);
+    NTSTATUS status = SmssRun(path, 0, 1, 0, 0, &exitStatus);
     if (status != STATUS_SUCCESS)
     {
         SmssPrintf("[KTEST] wow64 hello32.exe FAIL (create=%x)\n", SMSS_HEX(status));
@@ -1451,7 +1463,7 @@ void SessionInteractive(void)
         SmssSay("\nproskrnl: interactive desktop - explorer is the launcher\n\n");
         static HANDLE SessionShellProcess, SessionShellThread;
         NTSTATUS status = SmssSpawn(WSTR("\\??\\C:\\windows\\system32\\explorer.exe"),
-                                    WSTR("explorer.exe /desktop=shell,1280x800"), 0,
+                                    WSTR("explorer.exe /desktop=shell,1280x800"), 0, 0,
                                     &SessionShellProcess, &SessionShellThread);
         if (status != STATUS_SUCCESS)
             SmssPrintf("proskrnl: explorer failed to start (%x)\n", SMSS_HEX(status));
@@ -1462,7 +1474,8 @@ void SessionInteractive(void)
 
     SmssSay("\nproskrnl: interactive console - starting cmd.exe (type 'exit' to power off)\n\n");
     NTSTATUS exitStatus = 0;
-    NTSTATUS status = SmssRun(WSTR("\\??\\C:\\windows\\system32\\cmd.exe"), 0, 1, 0, &exitStatus);
+    NTSTATUS status =
+        SmssRun(WSTR("\\??\\C:\\windows\\system32\\cmd.exe"), 0, 1, 0, 0, &exitStatus);
     if (status != STATUS_SUCCESS)
         SmssPrintf("proskrnl: cmd.exe failed to start (%x)\n", SMSS_HEX(status));
 }
