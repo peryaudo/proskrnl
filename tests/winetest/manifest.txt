@@ -1132,14 +1132,32 @@ ntdll_test.exe:virtual
 ntdll_test.exe:wow64
 
 # --- kernel32 (third_party/wine/dlls/kernel32/tests) ------------------------
-# UNTRIAGED, FIXABLE. 39 failures in five sites, and the shape says
-#     "write a PE to disk, then run or map it": 26 at actctx.c:4354
-#     (subtest_manifest_res, which writes an EXE+DLL pair and executes them),
-#     8 at :4475, 3 at :3151 (LoadLibraryExA -> error 2), and one each at
-#     :2572/:3955 (CreateActCtxA -> 14001). kernel32:resource fails the same
-#     way and so does part of ntdll:rtl; the three are worth one triage
-#     rather than three, and the hypothesis to test is a section/page-cache
-#     coherence problem on the SEC_IMAGE path for a file just written.
+# TRIAGED, AND 34 OF 39 ARE FIXED. 39 -> 5 (re-measured this pin; the oracle
+#     half is green, 3296 tests / 0 failures). docs/21 W9 grouped this pair
+#     with kernel32:resource on the shape "write a PE to disk, then run or
+#     map it" and guessed a SEC_IMAGE coherence problem. THE SHAPE WAS RIGHT
+#     AND THE GUESS WAS WRONG, and the correction is the useful part: the
+#     shared cause was a shared writable DATA view's stores never reaching
+#     the file. kernel32's EndUpdateResource writes a module's new .rsrc
+#     section through a PAGE_READWRITE view of a temp copy and then copies
+#     the temp file back (dlls/kernel32/resource.c write_raw_resources); the
+#     stores lived only in the page cache, the cache died with the file's
+#     last handle, and the copy-back copied the untouched original while
+#     EndUpdateResource still reported success. Here that is
+#     add_sxs_dll_manifest failing to put the dependent assembly's manifest
+#     into sxs_dll.dll, so parse_depend_manifests could not find it: all 26
+#     at :4354 and all 8 at :4475, gone together. docs/03 "Mapped-view dirty
+#     pages", pinned by tests/ntapi/sem_mm/view_close_reopen.c.
+#
+#     WHAT IS LEFT, re-measured, summing to 5 — every one of them was in the
+#     39 and none is the resource-update cause:
+#       -  3  :3151, LoadLibraryExA -> error 2 (ERROR_FILE_NOT_FOUND) for
+#          entries 2/32/34 of test_actctx's dll list;
+#       -  1  :3138, CreateActCtxA SUCCEEDING where the case wants a refusal;
+#       -  1  :3955, CreateActCtxA -> 14001 (ERROR_SXS_CANT_GEN_ACTCTX).
+#     Untriaged past their assertion text: read the helper before believing
+#     it (docs/21 §4 trap 4), and note the run REACHES ITS SUMMARY LINE, so
+#     unlike most entries here the count is not a lower bound.
 # TODO: Implement
 # kernel32_test.exe:actctx
 kernel32_test.exe:atom
@@ -1449,14 +1467,33 @@ kernel32_test.exe:power
 #     ntdll:directory's reparse points; re-open only if the backend changes.
 #     No TODO for that reason: this is category (2), not a work item.
 # kernel32_test.exe:profile
-# UNTRIAGED, FIXABLE. 62 failures, then an unhandled 0xc0000005 — but
-#     the crash is a cascade and the entry point is earlier: resource.c:680
-#     and :695, GetFileMUIInfo failing 193 (ERROR_BAD_EXE_FORMAT). The bulk
-#     (16 at :442 MajorVersion, 8 at :447 NumberOfIdEntries, 7 at :428
-#     SizeOfRawData, 4 at :385 FindResource -> 1813, 4 at :450) is the
-#     Begin/Update/EndUpdateResource path rewriting a PE on disk and then
-#     reading it back. Same "write a PE, then map it" shape as
-#     kernel32:actctx; triage the two together.
+# TRIAGED, AND THE Begin/Update/EndUpdateResource HALF IS FIXED. 62 -> 21
+#     (re-measured this pin; the ORACLE half is green — 559 tests, 0
+#     failures). The whole update-a-module's-resources bulk is gone: 16 at
+#     :442 MajorVersion, 8 at :447 NumberOfIdEntries, 8 at :428/:427/:429
+#     (section geometry), 4 at :385 FindResource -> 1813 and 4 at :450. Its
+#     cause was a shared writable DATA view's stores never reaching the file
+#     — write_raw_resources builds the new .rsrc through a PAGE_READWRITE
+#     view of a temp copy and copies the temp file back, so with the stores
+#     lost every check_exe read the PRE-UPDATE module while
+#     EndUpdateResource still returned TRUE. docs/03 "Mapped-view dirty
+#     pages", pinned by tests/ntapi/sem_mm/view_close_reopen.c. This closes
+#     docs/21 W9's shared-cause question, and NOT with W9's hypothesis: the
+#     SEC_IMAGE path was never involved.
+#
+#     WHAT IS LEFT IS ONE CAUSE, AND IT IS THE OTHER READING OF "write a PE,
+#     then map it". All 21 are test_mui and all of them follow from
+#     resource.c:680 — GetFileMUIInfo on the module create_test_dll() just
+#     wrote answering 193 (ERROR_BAD_EXE_FORMAT), BEFORE any resource update
+#     touches it. The file is the hand-built `dll_image` struct at
+#     resource.c:525 — a DOS header, an NT header and one section, no
+#     imports, no entry point — so what is rejected is a MINIMAL PE, not a
+#     rewritten one. Everything after it is that value cascading: :698-:710
+#     and :749-:754 read back the 0xfe fill (-16843010), and the run then
+#     dies 0xc0000005 at `buf + info->dwLanguageNameOffset` with
+#     dwLanguageNameOffset = 0xfefefefe (docs/21 §4 trap 3 — the crash is the
+#     cascade, the first failing ok() is the bug). So the count is STILL a
+#     lower bound: nothing past resource.c:754 has been measured.
 # TODO: Implement
 # kernel32_test.exe:resource
 # PROSKRNL-FLAKY BY A RACE IN THE TEST, NOT A KERNEL GAP — and its real
