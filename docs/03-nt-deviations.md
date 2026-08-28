@@ -2855,7 +2855,7 @@ The truncating dispositions are the oracle's three `O_TRUNC` ones —
 `DeleteFile` of a mapped image answer `ERROR_USER_MAPPED_FILE` and
 `ERROR_ACCESS_DENIED`: both are Win32 spellings of an open, not separate rules.
 
-## Where a PE's section table may live, and what SizeOfHeaders means
+## What a PE's headers and raw offsets mean to an image section
 
 `SizeOfHeaders` does **not** bound the section table. A linker rounds it up to
 `FileAlignment` so the table always sits inside it and the question never
@@ -2885,11 +2885,26 @@ exactly whether the header region grew — the bytes sit inside the first page
 either way. proskrnl copies `sizeOfHeaders` bytes into freshly zeroed master
 frames (`MipMasterCommitRange`), which is the same statement.
 
-Convicted by the winetest gate: `kernel32:resource`'s `test_mui` builds such an
+**A segment's raw EXTENT and its raw OFFSET are read for different questions,
+and the extent alone never means there is data.** The same hand-written module
+is where that shows: its section declares `VirtualSize` 0, `SizeOfRawData`
+0x1000 and `PointerToRawData` **0**. `SizeOfRawData` still gives the segment
+its extent (`VirtualSize == 0` falls back to it), but the oracle maps no file
+bytes for a section with no raw offset at all —
+`if (!sec[i].PointerToRawData || !file_size) continue;`
+(`dlls/ntdll/unix/virtual.c` `map_image_into_view`) — so the reserved,
+zero-filled page stands. File offset 0 *is* the DOS header, so believing the
+extent copies the image's own headers into the segment; for this module that is
+the difference between an empty resource directory and one read out of a DOS
+stub. `MiParseImage` zeroes `rawSize` when `rawOffset` is zero, after the
+extent is derived.
+
+Convicted by the winetest gate: `kernel32:resource`'s `test_mui` builds this
 image by hand (`dlls/kernel32/tests/resource.c`, `dll_image` + `create_test_dll`)
 and `GetFileMUIInfo` maps it with `LOAD_LIBRARY_AS_IMAGE_RESOURCE`, which is a
 plain `CreateFileMapping(PAGE_READONLY | SEC_IMAGE)`. Refusing it produced
-`ERROR_BAD_EXE_FORMAT` and 21 failures plus a fault. Pinned by
+`ERROR_BAD_EXE_FORMAT` and 21 failures plus a fault; the pair is now green
+(`docs/21` W9). Both rules are pinned by
 `tests/ntapi/sem_mm/image_section_table.c`.
 
 **One residual, unpinned and pre-existing.** The oracle bounds the table by
