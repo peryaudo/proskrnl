@@ -243,6 +243,24 @@ NTSTATUS MiParseImage(const void *data, uint64_t size, MI_IMAGE_INFO *info)
         seg->virtualSize = sec->Misc.VirtualSize != 0 ? sec->Misc.VirtualSize : sec->SizeOfRawData;
         seg->rawOffset = sec->PointerToRawData;
         seg->rawSize = sec->SizeOfRawData;
+        /* An extent with no OFFSET names no file bytes. The two fields are
+         * read for different questions and SizeOfRawData alone is not enough
+         * to conclude there is data: it still gives the segment its extent
+         * when VirtualSize is zero (the line above), but where
+         * PointerToRawData is zero the oracle maps nothing at all —
+         *
+         *     if (!sec[i].PointerToRawData || !file_size) continue;
+         *
+         * (third_party/wine dlls/ntdll/unix/virtual.c map_image_into_view) —
+         * and the reserved, zero-filled page stands. Offset zero IS the DOS
+         * header, so believing the extent copies the image's own headers into
+         * the segment: for kernel32:resource's hand-built module that is the
+         * difference between an empty resource directory and one read out of
+         * a DOS stub. Pinned by sem_mm/image_section_table.c. */
+        if (seg->rawOffset == 0)
+        {
+            seg->rawSize = 0;
+        }
         seg->protect = MipSegmentProtect(sec->Characteristics);
         if (sec->Characteristics & (IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE))
         {
