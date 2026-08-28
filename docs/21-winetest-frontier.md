@@ -1491,7 +1491,7 @@ mask, where mailslots are a device, a create path and two info classes. The
 judgement the human still owns is whether the gate justifies THAT, not whether
 it justifies anything.
 
-### W9 — The write-then-load-an-image cluster (**`kernel32:resource` is GREEN — 62 → 21 → 0, but parked on issue #237 rather than activated; `kernel32:actctx` 39 → 5**)
+### W9 — The write-then-load-an-image cluster (**DONE — both pairs are GREEN and both are parked on issue #237 rather than activated: `kernel32:resource` 62 → 21 → 0, `kernel32:actctx` 39 → 5 → 0**)
 
 `kernel32:actctx`, `kernel32:resource`, and part of `ntdll:rtl`. All three
 write a PE to disk at runtime and then map or execute it, and all three
@@ -1529,10 +1529,77 @@ implements is worse than no line: it is the exact place a reader stops looking.
 **What was left was per-pair, neither residue was the shared cause, and one of
 the two is now closed.**
 
-- `kernel32:actctx`, 5: `:3151` ×3 (`LoadLibraryExA` → `ERROR_FILE_NOT_FOUND`),
-  `:3138` (`CreateActCtxA` succeeding where a refusal is wanted), `:3955`
-  (`CreateActCtxA` → `ERROR_SXS_CANT_GEN_ACTCTX`). The run reaches its summary
-  line, so 5 is a real count and not a lower bound.
+- `kernel32:actctx`, 5 → **0 and GREEN** (parked anyway, on the same issue
+  #237 as `kernel32:resource` — see the end of this entry). All five were the SAME
+  KIND of thing and **not one of them was kernel work**: the wtest image and
+  the sweep's environment differ from the oracle's prefix, which is §4 trap 6
+  and is the largest instance of it after `ntdll:reg`'s. The pair now reports
+  3296 executed / 15 todo / 0 flaky / 0 failures / 0 skipped, which is the
+  oracle's line field for field — the child processes included (the
+  `test_builtin_sxs` child goes 3 executed with 1 failure and 1 skip to 8
+  executed and neither).
+
+  - **`:3151` ×3 — `C:\windows\explorer.exe` was not on the volume.** The bake
+    put explorer at `windows/system32/explorer.exe` only, because that is the
+    path `win32u`'s desktop auto-launch hardcodes. `wine.inf` installs it at
+    **both** dirids (`10,,explorer.exe` beside `11,,explorer.exe`), and a
+    winetest names the `C:\windows` one. The three assertions are one
+    `LoadLibraryExA` in a three-flag loop, so the count is the loop's length
+    and not three subjects.
+  - **`:3955` — the `Microsoft.VC90.CRT` SxS assembly was not on the volume.**
+    `test_builtin_sxs` builds a manifest depending on it and asks
+    `CreateActCtxA` to resolve it; absent, that is
+    `ERROR_SXS_CANT_GEN_ACTCTX` (14001). Wine's prefix gets the assembly from
+    the fakedll pass over msvcr90/msvcp90/msvcm90, which the image cannot run
+    — the same reason the applets' Common-Controls assembly is baked by hand,
+    one assembly over. Baked the same way (the manifest is msvcr90's own with
+    the arch filled in; the three files it NAMES ride in the assembly
+    directory, and deliberately NOT in system32, because the assertion behind
+    it is that both DLLs resolve *under* `C:\Windows\WinSxS`).
+  - **`:3138` — the two halves ran the pairs from different directories**, and
+    this one is worth more than its single assertion. The oracle's runner does
+    `cd "$BUILD/wtests"` before every pair; the guest sweep gave each pair
+    smss's own directory, the kernel default `C:\windows\system32\`. The
+    assertion is that a RELATIVE dll name (`lpSource = "shell32.dll"`) does
+    **not** resolve into an activation context — true only because the oracle
+    runs somewhere with no `shell32.dll` in it. **A winetest reads its working
+    directory** (`GetCurrentDirectoryW` → `actctx.c`'s `work_dir`) and builds
+    its scratch files under it, so the difference is not confined to this
+    assertion: every pair in the sweep had been writing its scratch files into
+    `C:\windows\system32`. `user/smss/session.c` names `C:\wtests\` now, through
+    a `currentDirectory` argument on the one spawn path rather than a second one.
+
+  **The lesson is §4 trap 6 with the sharpest edge it has had.** All three
+  causes are invisible from the assertion text — `ERROR_FILE_NOT_FOUND`,
+  `ERROR_SXS_CANT_GEN_ACTCTX` and "CreateActCtxA succeeded" read as loader,
+  SxS and activation-context bugs respectively — and all three are answered by
+  `ls` on the oracle's prefix and `mdir` on the baked image. **Diff the two
+  environments before diagnosing a pair that reads a file or a directory**;
+  it costs a minute and it was worth five assertions here.
+
+  **And it is PARKED, on #237, for exactly `kernel32:resource`'s reason** — so
+  this entry now has the same finding twice, which is what makes it a property
+  of the LEG rather than of either pair. Measured over 13 full `make fulltest`
+  runs, alternating trees:
+
+  | tree | red / runs |
+  |---|---|
+  | the two fixes, `kernel32:actctx` PARKED | 0 / 3 |
+  | `main` (@ `7a50d12`) | 1 / 6 |
+  | the two fixes, `kernel32:actctx` ACTIVE | **4 / 4** |
+
+  The middle row is the one that convicts the ACTIVATION rather than the fixes,
+  and it is the control the `kernel32:resource` measurement did not have:
+  identical kernel, identical image, identical working-directory change,
+  differing only in whether one pair runs — 4/4 back to 0/3. `main`'s own
+  baseline reproduces the same 1 red / 6 that measurement recorded. The leg run
+  ALONE (`tools/fulltest.sh winetest`) is green even on the active tree, so it
+  takes a loaded 36-leg schedule to produce.
+
+  **The generalisable half: on this leg, ANY pair that lengthens the CUI arm is
+  now a #237 detonator, and that is a fact about #237, not a reason to stop
+  fixing pairs.** Two independent pairs have hit it; the next one will too.
+  Land the fix, park the pair, add the row.
 - `kernel32:resource`, 21 → **0 and GREEN** (parked anyway — see the end of this
   entry): all of them were
   `test_mui`, all downstream of `resource.c:680` — `GetFileMUIInfo` answering
@@ -3678,6 +3745,22 @@ Pairs and framings that will consume effort and unblock nothing.
    `build/tests/wineprefix/system.reg` answers it, and `NtCreateKey` creating
    only the LAST component is what turns one missing key into a whole test
    function's worth of failures.
+
+   **`kernel32:actctx` is the instance where the trap accounted for the WHOLE
+   pair** (W9): all five of its remaining failures were this, in three
+   spellings — a file at a path `wine.inf` installs and the bake did not
+   (`C:\windows\explorer.exe`), a whole SxS assembly the prefix gets from a
+   pass the image cannot run (`Microsoft.VC90.CRT`), and the two halves
+   running the pair from **different working directories**. The last is the
+   one to carry, because it is not a file at all: the oracle's runner `cd`s
+   into `build/wtests` and the guest sweep did not, so a winetest's own
+   `GetCurrentDirectoryW` answered `C:\windows\system32` on one runner and a
+   scratch directory on the other. **Extend the trap past `%windir%` and the
+   hive to the ENVIRONMENT: the working directory, and anything else the two
+   runners are handed rather than compute.** Every one of the three was
+   answered by `ls` on the oracle's prefix and `mdir` on the baked image —
+   a minute's work for five assertions that read as loader, SxS and
+   activation-context bugs.
 
 7. **The manifest is READ BY THE KERNEL-SIDE SWEEP, and it has a size
    bound.** `user/smss/session.c` slurps `C:\wtests\manifest.txt` into a

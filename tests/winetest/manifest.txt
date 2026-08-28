@@ -1132,33 +1132,64 @@ ntdll_test.exe:virtual
 ntdll_test.exe:wow64
 
 # --- kernel32 (third_party/wine/dlls/kernel32/tests) ------------------------
-# TRIAGED, AND 34 OF 39 ARE FIXED. 39 -> 5 (re-measured this pin; the oracle
-#     half is green, 3296 tests / 0 failures). docs/21 W9 grouped this pair
-#     with kernel32:resource on the shape "write a PE to disk, then run or
-#     map it" and guessed a SEC_IMAGE coherence problem. THE SHAPE WAS RIGHT
-#     AND THE GUESS WAS WRONG, and the correction is the useful part: the
-#     shared cause was a shared writable DATA view's stores never reaching
-#     the file. kernel32's EndUpdateResource writes a module's new .rsrc
-#     section through a PAGE_READWRITE view of a temp copy and then copies
-#     the temp file back (dlls/kernel32/resource.c write_raw_resources); the
-#     stores lived only in the page cache, the cache died with the file's
-#     last handle, and the copy-back copied the untouched original while
-#     EndUpdateResource still reported success. Here that is
-#     add_sxs_dll_manifest failing to put the dependent assembly's manifest
-#     into sxs_dll.dll, so parse_depend_manifests could not find it: all 26
-#     at :4354 and all 8 at :4475, gone together. docs/03 "Mapped-view dirty
-#     pages", pinned by tests/ntapi/sem_mm/view_close_reopen.c.
+# GREEN ON BOTH HALVES, AND PARKED ON ISSUE #237 — the same trade, for the
+#     same reason, as kernel32:resource below. 39 -> 5 -> 0.
 #
-#     WHAT IS LEFT, re-measured, summing to 5 — every one of them was in the
-#     39 and none is the resource-update cause:
-#       -  3  :3151, LoadLibraryExA -> error 2 (ERROR_FILE_NOT_FOUND) for
-#          entries 2/32/34 of test_actctx's dll list;
-#       -  1  :3138, CreateActCtxA SUCCEEDING where the case wants a refusal;
-#       -  1  :3955, CreateActCtxA -> 14001 (ERROR_SXS_CANT_GEN_ACTCTX).
-#     Untriaged past their assertion text: read the helper before believing
-#     it (docs/21 §4 trap 4), and note the run REACHES ITS SUMMARY LINE, so
-#     unlike most entries here the count is not a lower bound.
-# TODO: Implement
+#     MEASURED: 3296 tests executed, 15 marked as todo, 0 flaky, 0 failures,
+#     0 skipped — the ORACLE's summary line field for field, the child
+#     processes included (test_builtin_sxs's child goes 3 executed with 1
+#     failure and 1 skip to 8 executed and neither).
+#
+#     ALL FIVE OF THE REMAINING FAILURES WERE THE ENVIRONMENT, NOT THE
+#     KERNEL, which makes this docs/21 §4 trap 6's largest instance after
+#     ntdll:reg's — and its third spelling is new:
+#       -  3  :3151, LoadLibraryExA("C:\windows\explorer.exe") -> error 2.
+#              wine.inf installs explorer at BOTH dirids (10,,explorer.exe
+#              beside 11,,explorer.exe); the bake had only the system32 copy
+#              win32u's desktop auto-launch hardcodes. The three are ONE call
+#              in a three-flag loop, not three subjects.
+#       -  1  :3955, CreateActCtxA -> 14001 (ERROR_SXS_CANT_GEN_ACTCTX). The
+#              Microsoft.VC90.CRT side-by-side assembly was not on the volume:
+#              Wine's prefix gets it from setupapi's fakedll pass over
+#              msvcr90/msvcp90/msvcm90, which the image cannot run. Baked the
+#              way the applets' Common-Controls assembly already was.
+#       -  1  :3138, CreateActCtxA SUCCEEDING where a refusal is wanted — and
+#              this one is worth more than its count. The assertion is that a
+#              RELATIVE dll name (lpSource = "shell32.dll") does not resolve;
+#              it held on the oracle only because run.sh does `cd
+#              "$BUILD/wtests"` first, while the guest sweep handed each pair
+#              smss's own directory, C:\windows\system32 — which has a
+#              shell32.dll in it. A winetest READS its working directory
+#              (GetCurrentDirectoryW -> actctx.c's work_dir), so this was
+#              never confined to one assertion: every pair in the sweep had
+#              been writing its scratch files into the system directory. The
+#              sweep names C:\wtests now (user/smss/session.c).
+#
+#     SO WHY IS IT COMMENTED OUT? Not for anything this pair does — the same
+#     thing that keeps kernel32:resource parked. ACTIVATING IT RELIABLY TRIPS
+#     ISSUE #237, the pre-existing flake in the leg's OTHER arm: the audio
+#     boot comes up with no winmm devices and REGDB_E_CLASSNOTREG, i.e.
+#     mmdevapi:propstore crashing 0xc0000005 plus winmm:{capture,mixer,wave}
+#     at 4 failures each, on exactly the lines #237 lists. Measured over 13
+#     full `make fulltest` runs on one 32-core box, alternating trees:
+#
+#       the two fixes above, this pair PARKED   0 red / 3
+#       main (@ 7a50d12)                        1 red / 6
+#       the two fixes, this pair ACTIVE         4 red / 4
+#
+#     The pair itself passes in every one of those runs, and the leg RUN
+#     ALONE (tools/fulltest.sh winetest) is green on the active tree — it is
+#     a full 36-leg schedule that produces it. The middle row is what convicts
+#     the ACTIVATION rather than the fixes: with the identical kernel, the
+#     identical image and the identical working-directory change, parking one
+#     pair takes 4/4 back to 0/3, and main's own baseline is the same 1/6 the
+#     kernel32:resource measurement recorded. Nothing here touches audio, COM,
+#     the registry or firstboot; what moves is how long the CUI arm runs
+#     before the audio boot starts.
+#
+#     WHAT UN-PARKS IT: issue #237 being fixed. Nothing else. This is now that
+#     issue's second reliable reproduction, and the cheaper of the two.
+# TODO: Un-park once #237 is fixed (the pair itself is green)
 # kernel32_test.exe:actctx
 kernel32_test.exe:atom
 kernel32_test.exe:change
