@@ -1491,16 +1491,61 @@ mask, where mailslots are a device, a create path and two info classes. The
 judgement the human still owns is whether the gate justifies THAT, not whether
 it justifies anything.
 
-### W9 — The write-then-load-an-image cluster (**triage-first**)
+### W9 — The write-then-load-an-image cluster (**TRIAGED; the shared cause is FIXED — `kernel32:actctx` 39 → 5, `kernel32:resource` 62 → 21**)
 
 `kernel32:actctx`, `kernel32:resource`, and part of `ntdll:rtl`. All three
 write a PE to disk at runtime and then map or execute it, and all three
-fail at the map. That would be **one** bug — a section/page-cache coherence
-or file-size-visibility problem on the `SEC_IMAGE` path — worth three
-pairs.
+fail at the map. This item said that would be **one** bug — "a section/page-cache
+coherence or file-size-visibility problem on the `SEC_IMAGE` path" — and
+flagged itself as a pattern across three logs rather than a diagnosis.
 
-**I am explicitly unsure of this.** It is a pattern across three logs, not
-a diagnosis. Do not schedule the fix; schedule the triage.
+**There WAS one bug, and it was not on the `SEC_IMAGE` path at all.** It was a
+shared writable **data** view: stores through a `PAGE_READWRITE` view of a file
+landed in the page cache and nowhere else, the cache dies with the file's last
+handle (`fs/fat32/fat.c FatDereferenceFcb`), and a later open therefore read the
+pre-view bytes back off the disk. `docs/03` claimed those pages were "written
+back … at file close" and nothing did it.
+
+The reason it reads as an *image* problem from the logs is that the caller is
+`EndUpdateResource`: it copies the module to a temp file, builds the whole new
+`.rsrc` section **through a writable view** of the copy, unmaps, and copies the
+temp file back (`third_party/wine dlls/kernel32/resource.c write_raw_resources`).
+With the stores lost, the copy-back copies the untouched original, the call still
+returns TRUE, and every later read of that module sees the version before the
+update. So both pairs failed at a *resource read* after a *write*, which is what
+made "write a PE, then map it" the obvious framing.
+
+Fixed by `MiWritebackMappedView` (`kernel/mm/virtual.c`, called from
+`MiUnmapView` and `MiDeleteAddressSpace`), pinned by
+`tests/ntapi/sem_mm/view_close_reopen.c`, recorded in `docs/03` "Mapped-view
+dirty pages". `sem_mm/file_coherence.c` could never have caught it: it holds one
+handle open for the whole test, and inside a single open the cache IS the file.
+
+**Two lessons worth keeping.** The pattern-across-logs guess was right about
+there being one cause and wrong about which layer, and the wrong layer is where
+an hour would have gone. And a `docs/03` line that describes a behaviour nothing
+implements is worse than no line: it is the exact place a reader stops looking.
+
+**What is left is per-pair, and neither residue is the shared cause.**
+
+- `kernel32:actctx`, 5: `:3151` ×3 (`LoadLibraryExA` → `ERROR_FILE_NOT_FOUND`),
+  `:3138` (`CreateActCtxA` succeeding where a refusal is wanted), `:3955`
+  (`CreateActCtxA` → `ERROR_SXS_CANT_GEN_ACTCTX`). The run reaches its summary
+  line, so 5 is a real count and not a lower bound.
+- `kernel32:resource`, 21: **all of them `test_mui`, all downstream of
+  `resource.c:680`** — `GetFileMUIInfo` answering `193`
+  (`ERROR_BAD_EXE_FORMAT`) for the module `create_test_dll()` has just written,
+  *before* any resource update touches it. That module is the hand-built
+  `dll_image` struct at `resource.c:525`: a DOS header, an NT header, one
+  section, no imports and no entry point. So this residue really is a
+  **write-then-map-an-image** item — a minimal PE the image path refuses — and it
+  is the one piece of W9's original framing that survived. The pair still ends
+  in `0xc0000005` (the test indexes `buf` by the `0xfe`-filled
+  `dwLanguageNameOffset`), so 21 remains a lower bound: nothing past
+  `resource.c:754` has ever been measured.
+
+`ntdll:rtl`'s share of this item was always a different thing (`comctl32` cannot
+be on the CUI volume) and it now lives in `manifest-gui.txt`.
 
 ### W10 — The three wedges (**all three are DONE; `ntdll:thread` and `ntdll:sync` are GREEN and in the gate, `ntdll:threadpool` is green on proskrnl and red on the ORACLE**)
 
@@ -3601,7 +3646,11 @@ Pairs and framings that will consume effort and unblock nothing.
 
 ## 5. Where I am explicitly unsure
 
-- **W9's shared cause** is a pattern across three logs, not a diagnosis.
+- ~~**W9's shared cause** is a pattern across three logs, not a diagnosis.~~
+  **Measured, and it was half right.** There WAS one shared cause and it was
+  worth 75 assertions across two pairs — but it was a shared writable DATA
+  view's stores never reaching the file, not the `SEC_IMAGE` path the item
+  named. See W9.
 - ~~**The three wedges being one bug** (W10) is a guess from their shape.
   They may be three.~~ ~~**Measured and refuted.** `ntdll:thread`'s wedge was
   `THREAD_CREATE_FLAGS_BYPASS_PROCESS_FREEZE`; fixing it left `ntdll:sync`
