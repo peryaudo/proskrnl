@@ -41,7 +41,9 @@
  * CreateFileMapping(PAGE_READONLY | SEC_IMAGE), dlls/kernelbase/loader.c
  * load_library_as_datafile — failed with ERROR_BAD_EXE_FORMAT, and all 21 of
  * the pair's remaining failures were resource.c:680 and the 0xfe fill
- * cascading out of it. The header geometry below is that image's.
+ * cascading out of it. The header geometry below is that image's; its
+ * SECTION's raw fields are a second rule and are pinned separately, at the
+ * end of this file.
  *
  * Oracle-first (G5): every assertion here was green on the pinned Wine
  * before any kernel code changed.
@@ -241,6 +243,116 @@ static void check_mapped_image(HANDLE section, const char *what)
     NtUnmapViewOfSection(NtCurrentProcess(), view);
 }
 
+/* ---- the second rule: what PointerToRawData == 0 means --------------------
+ *
+ * The winetest's section header (dlls/kernel32/tests/resource.c:588) is
+ *
+ *     { ".rsrc\0\0", { 0 }, 0x1000, 0x1000, 0, 0, 0, 0, 0, ... }
+ *
+ * — VirtualSize ZERO, SizeOfRawData 0x1000, PointerToRawData ZERO. So it
+ * declares a page of raw data and then declares that it lives at file offset
+ * 0, which is the DOS header. The oracle refuses to believe the extent
+ * without the offset: dlls/ntdll/unix/virtual.c map_image_into_view maps no
+ * file bytes for such a section at all —
+ *
+ *     if (!sec[i].PointerToRawData || !file_size) continue;
+ *
+ * — leaving the reserved, zero-filled view page where it stands. An
+ * implementation that keys only on SizeOfRawData copies the image's own
+ * HEADERS into the section's page instead, which is the difference between
+ * an empty resource directory and a resource directory read out of a DOS
+ * stub. VirtualSize still comes from SizeOfRawData when it is zero (that is
+ * how the page gets its 0x1000 extent), so the two fields are read for
+ * different questions and only one of them is enough on its own.
+ */
+
+/* Patch the single section's raw fields in the image build_image just laid
+ * down. VirtualSize is left addressable so the winetest's literal zero can
+ * be reproduced. */
+static void set_section_raw(ULONG virtualSize, ULONG rawSize, ULONG rawOffset)
+{
+    IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)image_bytes;
+    IMAGE_NT_HEADERS64 *nt = (IMAGE_NT_HEADERS64 *)(image_bytes + dos->e_lfanew);
+    IMAGE_SECTION_HEADER *sec =
+        (IMAGE_SECTION_HEADER *)((char *)&nt->OptionalHeader + nt->FileHeader.SizeOfOptionalHeader);
+
+    sec->Misc.VirtualSize = virtualSize;
+    sec->SizeOfRawData = rawSize;
+    sec->PointerToRawData = rawOffset;
+}
+
+/* The section's page carries `payload` at file offset RAW_AT, or zeroes. */
+#define RAW_AT 0x2000u
+
+static void check_section_page(HANDLE section, const char *what, int wantPayload)
+{
+    SIZE_T view_size = 0;
+    NTSTATUS status;
+    ULONG i, wrong = 0;
+    UCHAR *view = NULL;
+
+    status = NtMapViewOfSection(section, NtCurrentProcess(), (PVOID *)&view, 0, 0, NULL, &view_size,
+                                ViewShare, 0, PAGE_READONLY);
+    ok(mapped_ok(status), "%s: map -> %08lx", what, (unsigned long)status);
+    if (!mapped_ok(status))
+        return;
+
+    for (i = 0; i < PAGE_BYTES; i++)
+    {
+        UCHAR want = wantPayload ? (UCHAR)(i ^ 0x5a) : 0;
+        if (view[PAGE_BYTES + i] != want)
+            wrong++;
+    }
+    ok(wrong == 0, "%s: %lu of %u section bytes wrong (first %02x %02x)", what,
+       (unsigned long)wrong, PAGE_BYTES, (unsigned)view[PAGE_BYTES],
+       (unsigned)view[PAGE_BYTES + 1]);
+
+    NtUnmapViewOfSection(NtCurrentProcess(), view);
+}
+
+static void test_section_raw_fields(HANDLE dir)
+{
+    NTSTATUS status;
+    HANDLE section;
+    ULONG i;
+
+    /* --- 5. the winetest's literal section: an extent with no offset.
+     * Nothing is read out of the file, so the page stays zero even though
+     * SizeOfRawData names a whole page of it. */
+    build_image(TIGHT_HEADERS, 1, IMAGE_BYTES);
+    set_section_raw(0, PAGE_BYTES, 0);
+    /* Poison the whole file so "zero" cannot be an accident of the bytes: a
+     * mapper that reads file offset 0 lands on the headers, and one that
+     * reads RAW_AT lands on the pattern. Everything past the headers is
+     * fair game — the section table is rewritten by build_image above. */
+    for (i = RAW_AT; i < IMAGE_BYTES; i++)
+        image_bytes[i] = (UCHAR)(i - RAW_AT) ^ 0x5a;
+    status = make_image_section(dir, W("noraw.dll"), IMAGE_BYTES, &section);
+    ok(status == STATUS_SUCCESS, "extent without offset -> %08lx", (unsigned long)status);
+    if (NT_SUCCESS(status))
+    {
+        check_section_page(section, "noraw", 0);
+        NtClose(section);
+    }
+
+    /* --- 6. ...and the same section WITH an offset, so "map nothing" is not
+     * a passing answer either. */
+    build_image(TIGHT_HEADERS, 1, IMAGE_BYTES);
+    set_section_raw(PAGE_BYTES, PAGE_BYTES, RAW_AT);
+    for (i = RAW_AT; i < IMAGE_BYTES; i++)
+        image_bytes[i] = (UCHAR)(i - RAW_AT) ^ 0x5a;
+    status = make_image_section(dir, W("raw.dll"), IMAGE_BYTES, &section);
+    ok(status == STATUS_SUCCESS, "extent with offset -> %08lx", (unsigned long)status);
+    if (NT_SUCCESS(status))
+    {
+        check_section_page(section, "raw", 1);
+        NtClose(section);
+    }
+
+    scrub_file(dir, W("noraw.dll"));
+    scrub_file(dir, W("raw.dll"));
+}
+
 START_TEST(image_section_table)
 {
     NTSTATUS status;
@@ -307,5 +419,8 @@ START_TEST(image_section_table)
     scrub_file(dir, W("roomy.dll"));
     scrub_file(dir, W("overrun.dll"));
     scrub_file(dir, W("short.dll"));
+
+    test_section_raw_fields(dir);
+
     NtClose(dir);
 }
