@@ -2855,6 +2855,54 @@ The truncating dispositions are the oracle's three `O_TRUNC` ones —
 `DeleteFile` of a mapped image answer `ERROR_USER_MAPPED_FILE` and
 `ERROR_ACCESS_DENIED`: both are Win32 spellings of an open, not separate rules.
 
+## Where a PE's section table may live, and what SizeOfHeaders means
+
+`SizeOfHeaders` does **not** bound the section table. A linker rounds it up to
+`FileAlignment` so the table always sits inside it and the question never
+arises, but a hand-written PE may declare exactly
+`sizeof(IMAGE_DOS_HEADER) + sizeof(IMAGE_NT_HEADERS)` and start its table on
+the byte after the header region ends — and NT loads that image. The rule
+`MiParseImage` (`kernel/mm/pecoff.c`) implements is the pinned oracle's, in
+its order (`third_party/wine server/mapping.c` `get_image_params`, the "load
+the section headers" block):
+
+- the table is bounded by the **image** (`SizeOfImage`, page-rounded) and by
+  the **file**, and a table past either is `STATUS_INVALID_FILE_FOR_SECTION` —
+  not `STATUS_INVALID_IMAGE_FORMAT`, which is what proskrnl used to answer for
+  both;
+- where the table overruns `SizeOfHeaders`, **the header region grows** to
+  cover it (`header_size = pos + size`). Nothing else about the image moves;
+  in particular the segments are still required to start at or after the
+  page-rounded header region, which is proskrnl's own commit-each-page-once
+  structure (Art. 3) and not the oracle's rule.
+
+**The growth is observable, which is why it is a behaviour and not an
+implementation detail.** `dlls/ntdll/unix/virtual.c` `map_image_into_view`
+zeroes the mapped view from `header_size` to the end of the header page before
+mapping the sections over it (`memset( ptr + header_size, 0, header_end - (ptr
++ header_size) )`), so whether the section table is readable *in the view* is
+exactly whether the header region grew — the bytes sit inside the first page
+either way. proskrnl copies `sizeOfHeaders` bytes into freshly zeroed master
+frames (`MipMasterCommitRange`), which is the same statement.
+
+Convicted by the winetest gate: `kernel32:resource`'s `test_mui` builds such an
+image by hand (`dlls/kernel32/tests/resource.c`, `dll_image` + `create_test_dll`)
+and `GetFileMUIInfo` maps it with `LOAD_LIBRARY_AS_IMAGE_RESOURCE`, which is a
+plain `CreateFileMapping(PAGE_READONLY | SEC_IMAGE)`. Refusing it produced
+`ERROR_BAD_EXE_FORMAT` and 21 failures plus a fault. Pinned by
+`tests/ntapi/sem_mm/image_section_table.c`.
+
+**One residual, unpinned and pre-existing.** The oracle bounds the table by
+`round_size(SizeOfImage, max(SectionAlignment - 1, page_mask))`, where
+`MiParseImage` rounds `sizeOfImage` to `PAGE_SIZE` only. For an image whose
+`SectionAlignment` exceeds a page the two bounds differ, so a table ending
+between the 4K- and the `SectionAlignment`-rounded size is accepted by the
+oracle and refused here. Nothing on either runner's stack builds such an image
+— every module in the baked set uses `SectionAlignment == 0x1000` — so it has
+never been reachable; the page rounding is used because it is the extent
+proskrnl actually maps, and inventing a second rounding for the bound alone
+would put two notions of the image's size in one function.
+
 ## A `SEC_RESERVE` section's commit ledger
 
 `SEC_RESERVE` is the one section kind whose views are **not** committed by the map,

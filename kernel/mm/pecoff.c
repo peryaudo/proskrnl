@@ -149,16 +149,6 @@ NTSTATUS MiParseImage(const void *data, uint64_t size, MI_IMAGE_INFO *info)
         return STATUS_INVALID_IMAGE_FORMAT;
     }
 
-    const IMAGE_SECTION_HEADER *sections =
-        (const IMAGE_SECTION_HEADER *)((const char *)&nt->OptionalHeader +
-                                       nt->FileHeader.SizeOfOptionalHeader);
-    uint64_t sectionTableEnd =
-        (uint64_t)((const char *)(sections + nt->FileHeader.NumberOfSections) - bytes);
-    if (sectionTableEnd > size || sectionTableEnd > opt.sizeOfHeaders)
-    {
-        return STATUS_INVALID_IMAGE_FORMAT;
-    }
-
     memset(info, 0, sizeof(*info));
     info->preferredBase = opt.imageBase;
     info->sizeOfImage = (opt.sizeOfImage + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1ULL);
@@ -178,6 +168,39 @@ NTSTATUS MiParseImage(const void *data, uint64_t size, MI_IMAGE_INFO *info)
     info->checksum = opt.checksum;
     info->fileSize = (ULONG)size;
     info->relocsStripped = (nt->FileHeader.Characteristics & IMAGE_FILE_RELOCS_STRIPPED) != 0;
+
+    /* The section table is bounded by the IMAGE and by the FILE — never by
+     * SizeOfHeaders. A linker rounds SizeOfHeaders up to FileAlignment so the
+     * table always sits inside it, but a hand-written PE may declare exactly
+     * sizeof(DOS) + sizeof(NT) and start its table on the next byte, and NT
+     * loads that: the header region GROWS to cover the table instead. Both
+     * halves are the pinned oracle's, in its own order (third_party/wine
+     * server/mapping.c get_image_params, "load the section headers"):
+     *
+     *     if (pos + size > mapping->image.map_size) return STATUS_INVALID_FILE_FOR_SECTION;
+     *     if (pos + size > mapping->image.header_size) mapping->image.header_size = pos + size;
+     *
+     * — its file bound is the short pread just below those, which carries the
+     * same status. Refusing on the SizeOfHeaders reading instead is what made
+     * kernel32:resource's test_mui image (dlls/kernel32/tests/resource.c,
+     * `dll_image`) unmappable. Pinned by sem_mm/image_section_table.c.
+     *
+     * The growth is bounded by both tests above, so the SizeOfHeaders sanity
+     * check below still convicts a declared value past the file or the image;
+     * it simply no longer sees a value the table alone raised. */
+    const IMAGE_SECTION_HEADER *sections =
+        (const IMAGE_SECTION_HEADER *)((const char *)&nt->OptionalHeader +
+                                       nt->FileHeader.SizeOfOptionalHeader);
+    uint64_t sectionTableEnd =
+        (uint64_t)((const char *)(sections + nt->FileHeader.NumberOfSections) - bytes);
+    if (sectionTableEnd > info->sizeOfImage || sectionTableEnd > size)
+    {
+        return STATUS_INVALID_FILE_FOR_SECTION;
+    }
+    if (sectionTableEnd > info->sizeOfHeaders)
+    {
+        info->sizeOfHeaders = (ULONG)sectionTableEnd;
+    }
 
     if (info->sizeOfHeaders > size || info->sizeOfHeaders > info->sizeOfImage ||
         info->sizeOfImage == 0)
