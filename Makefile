@@ -153,6 +153,7 @@ CSRC := kernel/init/main.c \
         arch/x86_64/serial.c \
         arch/x86_64/rtc.c \
         arch/x86_64/smbios.c \
+        arch/x86_64/acpi.c \
         arch/x86_64/fwcfg.c \
         arch/x86_64/idt.c \
         arch/x86_64/lapic.c \
@@ -160,6 +161,7 @@ CSRC := kernel/init/main.c \
         arch/x86_64/cpu.c \
         arch/x86_64/mmu.c \
         tests/kmt/lib.c \
+        tests/kmt/acpi.c \
         tests/kmt/m2_dispatcher.c \
         tests/kmt/m3_ob.c \
         tests/kmt/m4_usermode.c \

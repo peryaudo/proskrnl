@@ -29,6 +29,12 @@ void KiInitializeClock(void);
 /* Signal end-of-interrupt to the LAPIC. */
 void KiEndOfInterrupt(void);
 
+/* The physical base of the LAPIC register window as IA32_APIC_BASE names it
+ * right now (the same read KiInitializeClock mapped the window from). The
+ * firmware describes the same window in the MADT (arch/x86_64/acpi.c), and
+ * tests/kmt/acpi.c holds the two to agreement. */
+uint64_t KiLocalApicPhysicalAddress(void);
+
 /* TSC cycles per millisecond, measured across the SAME PIT gate the LAPIC
  * timer is calibrated on, and 0 until KiInitializeClock has run. It is the
  * conversion kernel/ke/timer.c interpolates the 1 ms tick with, so that the

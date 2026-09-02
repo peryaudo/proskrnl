@@ -67,6 +67,14 @@ extern int kmt_todo;     /* todo_kmt nesting depth */
  * counted strings, mem* intrinsics. Returns failures. */
 int kmt_run_lib(void);
 
+/* The firmware-table suite (tests/kmt/acpi.c): the ACPI tables
+ * arch/x86_64/acpi.c located — RSDP/root checksums, the FADT's PM1 control
+ * block, the DSDT's \_S5 package, the MADT against the LAPIC the MSR names —
+ * and, under QEMU, the pinned q35 device model's own values (the PM base
+ * read back from the LPC bridge, the APM port, the S5 sleep type). Returns
+ * failures. */
+int kmt_run_acpi(void);
+
 /* The M2 suite (tests/kmt/m2_dispatcher.c). Returns total failures. */
 int kmt_run_m2(void);
 

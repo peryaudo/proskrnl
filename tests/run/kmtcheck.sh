@@ -43,7 +43,7 @@ LOG="${1:-$ROOT/build/serial.log}"
 # on this image (they gate on a baked manifest and stay silent), so they are
 # not here — run.sh fatinterop/fatstress grep their own verdicts.
 SUITES=(
-    M1 LIB M2 M3 M4 M5 M6
+    M1 LIB ACPI M2 M3 M4 M5 M6
     CUI8 CUI9 CONDRV PREVENTIVE SCHED
     ABI M7 M8 M9
     sweep
