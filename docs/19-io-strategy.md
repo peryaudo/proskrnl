@@ -338,8 +338,8 @@ Concretely:
   walker, `VioFindCapability`, hard-filters on the virtio vendor id and cannot see cap
   0x11) plus the `INTERRUPT_LINE`-adjacent config fields it needs; virtio's walker becomes
   a client of it or stays as the vendor-specific specialization — one walk authority.
-- `drivers/virtio/pci.c` maps the MSI-X table BAR through the existing `VioMapMmio`
-  window (still before `MiFreezeKernelPml4`, same as every other virtio mapping), programs
+- `drivers/virtio/pci.c` maps the MSI-X table BAR through the tree's one MMIO window
+  (`KiPciMapMmio`, drivers/pci.c; still before `MiFreezeKernelPml4`, same as every other virtio mapping), programs
   one table entry, sets MSI-X Enable, and writes `queueMsixVector` for the request queue
   **after** `queueSelect`, checking the `VIRTIO_MSI_NO_VECTOR` readback (§4.1.4.3). The
   config-change vector stays `VIRTIO_MSI_NO_VECTOR` — nothing consumes config interrupts.
