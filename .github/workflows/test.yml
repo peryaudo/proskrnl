@@ -151,6 +151,16 @@ jobs:
         env:
           TIMEOUT: "600"
 
+      # The same boot, ended through ACPI S5 instead of the debug port: the
+      # [KTEST] ACPI suite (the firmware tables against the hardware they
+      # describe) plus QEMU exiting 0 ON ITS OWN — the one status isa-debug-exit
+      # cannot produce, so it convicts the S5 write (docs/08).
+      - name: ACPI tables + S5 power-off ends the boot with QEMU status 0 (tests/run/run.sh acpi)
+        if: ${{ !cancelled() }}
+        run: tests/run/run.sh acpi
+        env:
+          TIMEOUT: "600"
+
       # One deterministic batch (seed 1, 64 programs, anon-name policy — the
       # documented clean green gate): random Nt* sequences, oracle vs kernel.
       - name: differential fuzzer (tests/run/run.sh fuzz)

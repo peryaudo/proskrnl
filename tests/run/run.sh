@@ -2255,6 +2255,68 @@ cui7() {
     return 0
 }
 
+# The ACPI acceptance (docs/02 "ACPI"): the standard test boot, ended through
+# ACPI S5 instead of the isa-debug-exit port (GUEST_POWEROFF=1). Three facts
+# make the verdict, and the third is the one no other leg can state:
+#   1. [KTEST] ACPI PASS -- the firmware tables arch/x86_64/acpi.c located
+#      are self-consistent, agree with the hardware they describe, and (under
+#      QEMU) match the pinned q35 device model's own values; and every other
+#      kmt suite still passes (kmtcheck: the boot is `make test`'s).
+#   2. "[KTEST] acpi poweroff S5" -- the kernel took the S5 path, AFTER the
+#      sweep verdict (the verdict end, not some earlier exit), and never fell
+#      back to the debug port.
+#   3. QEMU exited ON ITS OWN with status 0. The debug port can only produce
+#      (code << 1) | 1 -- always odd -- and the killer's SIGKILL is 137, so 0
+#      is the S5 write and nothing else (tools/qemu.sh writes the status
+#      beside the log). PASS_RE is the S5 line so the killer's grace starts
+#      only once the write has been issued; GRACE is generous because a
+#      status of 137 must mean a wedged main loop, never a race with it.
+acpi() {
+    local img log status fails=0
+    img="$(test_image_copy "$ROOT/build/tests/acpi.hdd")" || exit 1
+    log="$ROOT/build/tests/acpi.log"
+    rm -f "$log.status"
+    LOG="$log" PASS_RE='\[KTEST\] acpi poweroff S5' GRACE="${GRACE:-30}" \
+        TIMEOUT="${TIMEOUT:-900}" GUEST_GUI=0 GUEST_POWEROFF=1 \
+        "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 || true
+
+    if ! grep -qE '^\[KTEST\] ACPI PASS' "$log"; then
+        echo "[KTEST] acpi-suite FAIL (no [KTEST] ACPI PASS on serial)"
+        fails=$((fails + 1))
+    else
+        echo "[KTEST] acpi-suite PASS"
+    fi
+    "$ROOT/tests/run/kmtcheck.sh" "$log" || fails=$((fails + 1))
+
+    # The S5 line, after the sweep verdict, with no fallback line anywhere.
+    if ! awk '/^\[KTEST\] sweep PASS/ { seen = 1 }
+              /^\[KTEST\] acpi poweroff S5 / && seen { found = 1 }
+              END { exit found ? 0 : 1 }' "$log"; then
+        echo "[KTEST] acpi-s5 FAIL (no '[KTEST] acpi poweroff S5' after the sweep verdict)"
+        fails=$((fails + 1))
+    elif grep -q 'isa-debug-exit' "$log"; then
+        echo "[KTEST] acpi-s5 FAIL (the kernel fell back to the debug port: $(grep -m1 'isa-debug-exit' "$log"))"
+        fails=$((fails + 1))
+    else
+        echo "[KTEST] acpi-s5 PASS ($(grep -m1 '^\[KTEST\] acpi poweroff S5' "$log"))"
+    fi
+
+    status="$(cat "$log.status" 2>/dev/null || echo none)"
+    if [[ "$status" != 0 ]]; then
+        echo "[KTEST] acpi-exit FAIL (qemu status $status: odd = the debug port, 137 = killed after GRACE, none = no status recorded)"
+        fails=$((fails + 1))
+    else
+        echo "[KTEST] acpi-exit PASS (qemu exited 0 on its own: the S5 write stopped the machine)"
+    fi
+
+    if [[ "$fails" -ne 0 ]]; then
+        echo "== acpi: FAIL ($fails; see $log) =="
+        return 1
+    fi
+    echo "== acpi: PASS (tables pinned; S5 power-off ended the boot with qemu status 0) =="
+    return 0
+}
+
 # The comparable form of a boot's [KTEST] lines for the determinism stages
 # below: the filtered lines, with IDENTITY VALUES neutralized.
 #
@@ -4372,6 +4434,7 @@ case "$MODE" in
     files)    files ;;
     cui6)     cui6 ;;
     cui7)     cui7 ;;
+    acpi)     acpi ;;
     cui8)     cui8 ;;
     cui9)     cui9 ;;
     net)      net ;;
@@ -4393,7 +4456,7 @@ case "$MODE" in
     winefbunit) winefbunit ;;
     resolvunit) resolvunit ;;
     winetest-gui) winetest_gui ;;
-    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|cui8|cui9|net|net3|wow64|fatinterop|fatstress|tornwrite|gui|audio|wow64aud|gui2|gui3|gui4|gui5|gui5con|wow64gui|gui6|coldinput|winefbunit|resolvunit|winetest-gui [pair...]}" >&2
+    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|acpi|cui8|cui9|net|net3|wow64|fatinterop|fatstress|tornwrite|gui|audio|wow64aud|gui2|gui3|gui4|gui5|gui5con|wow64gui|gui6|coldinput|winefbunit|resolvunit|winetest-gui [pair...]}" >&2
        echo "       subtest = a tests/ntapi test's base name, or a glob over base names" >&2
        echo "       pair    = a winetest <module>[:<subtest>] (ntdll, printf, ntdll:env), or a glob" >&2
        echo "                 (iteration only — the gate is the unfiltered run)" >&2

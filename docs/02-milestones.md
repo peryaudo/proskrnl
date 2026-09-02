@@ -927,6 +927,32 @@ ring-3 return path loading its data segments, and the PE32/machine arm in `mm` �
 CORRECTNESS fixes that stand without it and are not reverted with it. `docs/03` "WOW64
 notes" says which is which and why.
 
+## ACPI — firmware tables + S5 power-off *(toward bare metal)* — **DONE**
+The first step off the VM: the kernel reads the firmware's ACPI tables for itself and
+uses them for the one thing a session's end needs — turning the machine off — so that the
+same image ends a session on a real box the way it ends one on QEMU. `arch/x86_64/acpi.c`
+walks RSDP → RSDT/XSDT → FADT (the PM1 control blocks, SMI command port, SCI vector,
+flags), DSDT (only `\_S5`, by a bounded scan of the AML byte grammar — no interpreter) and
+MADT (the local APIC address and the interrupt-controller census), refusing any table that
+fails its own checksum; `arch/x86_64/power.c` `KiPowerOff` does the ACPI 6.5 §16.3.1
+mode-enable and §16.1.7 soft-off writes, and the QEMU debug-exit port becomes the
+said-on-serial fallback where no usable S5 exists. Callers: ring-3 `NtShutdownSystem`
+(PowerOff and NoReboot) and the interactive session's end. The test boot's verdict end
+keeps the debug port (its status carries the in-kernel total; a panic stays a distinct
+status) unless `GUEST_POWEROFF=1` asks otherwise.
+**Done when:** `[KTEST] ACPI` is green — the tables self-consistent, the MADT's LAPIC the
+one `IA32_APIC_BASE` names, and under QEMU the parser pinned against the q35 device
+model's own values (the PM base read back from the LPC bridge's PCI config, the APM port,
+the S5 sleep type) — **and** `tests/run/run.sh acpi` proves the power-off: a standard
+boot ended through S5, with QEMU exiting **0 on its own** — the one status isa-debug-exit
+cannot produce (`(code << 1) | 1`), so it convicts the S5 write rather than the port.
+Both hold; `cui7`'s ring-3 poweroff now rides the same path.
+Named unbuilt exits (each a work item, none a hack): an AML interpreter and SSDTs (a
+firmware that defines `\_S5` as a Method is reported "no S5" and falls back), the ACPI PM
+timer (`docs/22`), `RESET_REG` for the Reboot arm (still the 8042 pulse), hardware-reduced
+platforms (`SLEEP_CONTROL_REG`), the IOAPIC (`docs/19` §11a: MSI-X only), and the
+`SystemFirmwareTableInformation` "ACPI" provider (`KiAcpiFindTable` is its accessor).
+
 ---
 
 ## Success probability (honest)

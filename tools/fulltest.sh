@@ -148,7 +148,7 @@ unset WINEPREFIX LOG PASS_RE TIMEOUT GRACE MEM GUI_DEADLINE AUDIO_DEADLINE \
       EXTRA_DEVICES INTERACTIVE GUI_DISPLAY WTEST_NO_ORACLE FONTDIFF_REFRESH \
       NET_PCAP NET_ECHO_PORT \
       GUEST_LEG GUEST_SUBTESTS GUEST_GUI GUEST_SERIAL GUEST_INTERACTIVE \
-      GUEST_STRESS
+      GUEST_STRESS GUEST_POWEROFF QEMU_STATUS_FILE
 
 NPROC="$( (nproc || sysctl -n hw.ncpu) 2>/dev/null || echo 4)"
 
@@ -173,7 +173,7 @@ NPROC="$( (nproc || sysctl -n hw.ncpu) 2>/dev/null || echo 4)"
 # net3 drops out on its own when the pinned curl.exe is absent (the leg refuses
 # loudly before building anything).
 ALL_LEGS=(winetest-gui winetest wow64gui wow64aud winefbunit gui5con gui6 coldinput tornwrite gui4 cui8 gui3 gui5 gui2 cui9
-          scm proskrnl firstboot persist cui7 gui audio procs files console boot
+          scm proskrnl firstboot persist cui7 gui audio procs files console boot acpi
           cui6 net net3 resolvunit oracle wow64 fatstress fuzz fatinterop frontier)
 
 usage() {

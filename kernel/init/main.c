@@ -376,6 +376,26 @@ static void KiConfigureCui8Stress(void)
     }
 }
 
+/* How the TEST boot's verdict end stops the machine (tools/qemu.sh
+ * GUEST_POWEROFF=1, \Registry\Machine\Hardware\qemu "PowerOff"): through
+ * ACPI S5 (arch/x86_64/power.c) like the product paths, or (the default
+ * under QEMU) through the isa-debug-exit port, whose status carries the
+ * in-kernel total and keeps a panic's status distinct from a clean S5 exit
+ * (docs/08). Where no fw_cfg device answered at all there is no debug-exit
+ * device either, so that machine powers off through S5 — the one arrangement
+ * that means anything there. The acpi leg (tests/run/run.sh) arms it: QEMU
+ * exiting 0 on its own is then the proof the S5 write ended the machine. */
+static BOOLEAN KiPowerOffViaAcpi;
+
+static void KiConfigurePowerOff(void)
+{
+    KiPowerOffViaAcpi = CmQueryQemuBootFlag(WSTR("PowerOff"), 1) != 0;
+    if (KiPowerOffViaAcpi)
+    {
+        DbgPrint("[KTEST] verdict end powers off through ACPI S5 (Hardware\\qemu PowerOff)\n");
+    }
+}
+
 /* Launch the session manager (user/smss): the ONE user image the kernel
  * starts. Everything user-mode past this point — wineserver-lite, conhost,
  * firstboot, the interactive console, the acceptance flows, the ntapi and
@@ -486,6 +506,7 @@ static void KiTestMainThread(void *context)
     KiConfigurePanicOnNotImplemented();
     KiConfigureBootProfiler();
     KiConfigureCui8Stress();
+    KiConfigurePowerOff();
 
     /* Net-1: lwIP + the netd mainloop over the NIC IoInitializeTransport
      * probed pre-freeze. Deliberately here — after the boot volume and the
@@ -691,6 +712,10 @@ static void KiTestMainThread(void *context)
      * the number to watch when a timing-sensitive test starts flaking. */
     DbgPrint("clock: %lu ms uptime, %lu ms recovered from undelivered ticks\n",
              (uint64_t)KeTickCount, (uint64_t)KiCatchUpTicks);
+    if (KiPowerOffViaAcpi)
+    {
+        KiPowerOff(); /* the acpi leg: S5, never the debug port (KiConfigurePowerOff) */
+    }
     KiQemuExit(total == 0 ? 0 : 1);
     /* The debug-exit teardown is asynchronous; do not run past it. */
     for (;;)
