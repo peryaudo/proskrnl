@@ -130,6 +130,13 @@ START_TEST(gui4b)
     cls.lpfnWndProc = wndproc_b;
     cls.hInstance = GetModuleHandleW(NULL);
     cls.lpszClassName = class_b;
+    /* The I-beam, deliberately not the arrow: dump 3 parks the cursor
+     * inside this window, and the shape it must show there is THIS class's
+     * (WM_SETCURSOR -> DefWindowProc -> the class cursor -> NtUserSetCursor,
+     * none of it our code), told apart from the desktop's arrow by
+     * check_gui4.py against the asset itself. Without a class cursor Wine
+     * shows no cursor at all over a window that never calls SetCursor. */
+    cls.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_IBEAM);
     ok(RegisterClassW(&cls) != 0, "RegisterClassW");
 
     /* Created strictly after A exists: the deterministic-activation order

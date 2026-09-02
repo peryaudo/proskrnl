@@ -28,7 +28,18 @@ what it uncovered, A repainted cross-process), the vacated strip is
 background again, and the cursor sits at the second park point.
 
 The cursor is graded past "it is drawn somewhere", because a scanout with
-more than one writer is where a software cursor goes wrong:
+more than one writer is where a software cursor goes wrong. Its SHAPE is
+graded against the asset itself: the pinned Wine's own cursor resources
+(third_party/wine/dlls/user32/resources/ocr_*.cur, the files user32.dll
+carries on the image) are decoded here, the way user32 selects and decodes
+them, and every pixel of the footprint at a park point must be the asset's
+pixel where it is opaque and what lies beneath where it is not. Over the
+desktop that is the arrow (IDC_ARROW: the desktop's own shape, published
+by the process that sized the desktop window and re-asserted by the pump
+over a window no thread owns); parked inside B it is B's class cursor, the
+I-beam (gui4b.c) -- the per-window shape change end to end, through
+WM_SETCURSOR, NtUserSetCursor and the server's WM_WINE_SETCURSOR to B's
+own process, which is the only one that can read the handle's pixels.
 
 - dump 2 additionally forbids FOREIGN pixels inside B's moved window rect.
   B is opaque over its whole rect and nothing is above it, so a pixel
@@ -47,10 +58,29 @@ is structural, against what the guest declared on serial.
 """
 import argparse
 import collections
+import pathlib
 import re
+import struct
 import sys
 
 from check_rect import read_ppm
+
+# The pinned tree's stock cursors, the same files the image's user32.dll
+# carries (Makefile WINESTRIP_GUI_NAMES bakes the pinned user32 unstripped
+# of resources).
+CURSOR_DIR = pathlib.Path(__file__).resolve().parents[2] / "third_party/wine/dlls/user32/resources"
+# The ids WM_SETCURSOR's default handling resolves to (dlls/win32u/defwnd.c
+# handle_set_cursor), re-verify in third_party/wine/include/winuser.rh.
+OCR_NORMAL = 32512
+OCR_IBEAM = 32513
+# The driver's opacity cut, cursorshape.h PRSK_CURSOR_ALPHA_OPAQUE (the
+# pinned winex11's "more than 10% alpha").
+ALPHA_OPAQUE = 25
+# The frame LoadCursor picks: LR_DEFAULTSIZE means SM_CXCURSOR x SM_CYCURSOR
+# (dlls/user32/cursoricon.c CURSORICON_Load -> CURSORICON_FindBestCursorRes),
+# 32 on every image (dlls/win32u/sysparams.c), at the display's own depth.
+CURSOR_SIZE = 32
+CURSOR_BPP = 32
 
 # The driver's own lines keep the "gui2" literal (check_gui3.py's note).
 MODE = re.compile(
@@ -68,6 +98,10 @@ B_MOVED = re.compile(r"\[KTEST\] gui4 B moved rect=(?P<x>-?\d+),(?P<y>-?\d+),(?P
 CLICK = re.compile(r"\[KTEST\] gui4 (?P<who>[AB]) click (?P<x>-?\d+),(?P<y>-?\d+)")
 CHAR = re.compile(r"\[KTEST\] gui4 (?P<who>[AB]) char=(?P<ch>[0-9a-f]+)")
 A_ACTIVE = re.compile(r"\[KTEST\] gui4 A active")
+# cursor.c winefb_set_cursor: one line per WM_WINE_SETCURSOR the owning
+# process decoded and published, naming the stock resource id.
+CURSOR_SET = re.compile(r"\[KTEST\] gui4 cursor hwnd=[0-9a-f]+ handle=\S+ res=(?P<res>\d+)")
+CURSOR_REFUSED = re.compile(r"wineserver-lite: set_cursor failed")
 
 # Solid fills, so strong floors: the client area of each window must be
 # dominated by its own fill where it is exposed.
@@ -81,14 +115,71 @@ TOL = 8
 # something was painted.
 A_FILL = (0x20, 0x60, 0xC0)
 B_FILL = (0xC0, 0x40, 0x20)
-CURSOR_BLACK = (0x00, 0x00, 0x00)
-CURSOR_WHITE = (0xFF, 0xFF, 0xFF)
-# cursor.c's bitmap, so a park point's footprint can be excluded from a census.
-CURSOR_W, CURSOR_H = 12, 20
 # Slack for a themed window frame that happens to sample near a forbidden
-# colour. A stale patch is a whole cursor footprint (240 px), so this floor
-# separates the two by an order of magnitude on any window this leg makes.
+# colour. A stale patch is a whole cursor footprint (a thousand px), so this
+# floor separates the two by an order of magnitude on any window this leg
+# makes.
 MAX_FOREIGN = 0.001
+
+
+class Cursor:
+    """One stock cursor, decoded from its .cur file the way the image's
+    user32 decodes it: the LR_DEFAULTSIZE frame at the display depth, its
+    32bpp XOR image, and the opacity the driver derives from it
+    (cursorshape.h) -- the alpha channel's cut when the frame has one, the
+    AND mask otherwise. The file layout is CURSORICONFILEDIR /
+    CURSORICONFILEDIRENTRY (dlls/user32/user_private.h) over a
+    BITMAPINFOHEADER whose height covers both planes, XOR (bottom-up 32bpp)
+    then AND (bottom-up 1bpp, DWORD-aligned rows: dlls/user32/cursoricon.c
+    get_dib_image_size)."""
+
+    def __init__(self, name):
+        data = (CURSOR_DIR / name).read_bytes()
+        _, kind, count = struct.unpack_from("<HHH", data, 0)
+        if kind != 2:
+            sys.exit(f"check_gui4: {name} is not a cursor file")
+        chosen = None
+        for i in range(count):
+            width, height, _, _, hot_x, hot_y, size, offset = struct.unpack_from(
+                "<BBBBHHII", data, 6 + 16 * i
+            )
+            bpp = struct.unpack_from("<H", data, offset + 14)[0]
+            if width == CURSOR_SIZE and height == CURSOR_SIZE and bpp == CURSOR_BPP:
+                chosen = (hot_x, hot_y, offset)
+        if chosen is None:
+            sys.exit(f"check_gui4: {name} has no {CURSOR_SIZE}x{CURSOR_SIZE} {CURSOR_BPP}bpp frame")
+        self.name = name
+        self.hot_x, self.hot_y, offset = chosen
+        header_size = struct.unpack_from("<I", data, offset)[0]
+        self.width, self.height = CURSOR_SIZE, CURSOR_SIZE
+        xor = offset + header_size
+        and_plane = xor + self.width * self.height * 4
+        and_stride = ((self.width + 31) // 32) * 4
+        self.rgb = {}
+        self.opaque = {}
+        alpha = {}
+        for y in range(self.height):
+            row = self.height - 1 - y  # bottom-up
+            for x in range(self.width):
+                b, g, r, a = struct.unpack_from("<BBBB", data, xor + (row * self.width + x) * 4)
+                self.rgb[(x, y)] = (r, g, b)
+                alpha[(x, y)] = a
+                and_bit = data[and_plane + row * and_stride + x // 8] & (0x80 >> (x % 8))
+                self.opaque[(x, y)] = not and_bit
+        if any(alpha.values()):
+            for key, value in alpha.items():
+                self.opaque[key] = value > ALPHA_OPAQUE
+        if not any(self.opaque.values()):
+            sys.exit(f"check_gui4: {name} decoded to an empty cursor")
+
+    def footprint(self, park):
+        """The screen rect the cursor covers with its hotspot at `park`."""
+        left, top = park[0] - self.hot_x, park[1] - self.hot_y
+        return (left, top, left + self.width, top + self.height)
+
+
+def in_rect(rect, x, y):
+    return rect[0] <= x < rect[2] and rect[1] <= y < rect[3]
 
 
 def close(a, b, tol=TOL):
@@ -147,30 +238,44 @@ def dominant_check(failures, dump, rect, fill, what):
         )
 
 
-def cursor_check(failures, dump, park, beneath, what):
-    """The arrow is at `park`, and `beneath` (the desktop background, or a
-    window's fill when the cursor is parked over one) is what shows beside
-    it."""
-    x, y = park
-    hotspot = dump.at(x, y)
-    fill = dump.at(x + 1, y + 3)  # inside the arrow's white fill (cursor.c's bitmap)
-    beside = dump.at(x + 20, y)  # right of the 12px-wide arrow: what is under it again
-    if not close(hotspot, CURSOR_BLACK):
-        failures.append(f"{what}: no cursor outline at park point {park} (got {hotspot})")
-    if not close(fill, CURSOR_WHITE):
-        failures.append(f"{what}: no cursor fill at {(x + 1, y + 3)} (got {fill})")
-    if not close(beside, beneath):
-        failures.append(f"{what}: expected {beneath} beside the cursor at {(x + 20, y)}, got {beside}")
+def cursor_check(failures, dump, park, beneath, cursor, what):
+    """`cursor` sits with its hotspot at `park`, and `beneath` (the desktop
+    background, or a window's fill when the cursor is parked over one) is
+    what shows through its transparent pixels and around it.
+
+    Every pixel of the footprint is graded, plus a one-pixel ring around it
+    (the shape must not smear past its own rect): the asset's colour where
+    it is opaque, `beneath` everywhere else. Zero tolerance in count, TOL in
+    channel -- the scanout path is lossless on bgrx."""
+    left, top, right, bottom = cursor.footprint(park)
+    mismatches = []
+    for y in range(top - 1, bottom + 1):
+        for x in range(left - 1, right + 1):
+            if x < 0 or y < 0 or x >= dump.width or y >= dump.height:
+                continue
+            inside = in_rect((left, top, right, bottom), x, y)
+            key = (x - left, y - top)
+            expected = cursor.rgb[key] if inside and cursor.opaque[key] else beneath
+            got = dump.at(x, y)
+            if not close(got, expected):
+                mismatches.append(((x, y), expected, got))
+    if mismatches:
+        (where, expected, got) = mismatches[0]
+        failures.append(
+            f"{what}: {len(mismatches)} pixel(s) of {cursor.name}'s footprint at {park} "
+            f"differ from the asset over {beneath} in {dump.path}; first at {where}: "
+            f"expected {expected}, got {got}"
+        )
 
 
-def foreign_pixel_check(failures, dump, rect, forbidden, parks, what):
+def foreign_pixel_check(failures, dump, rect, forbidden, footprints, what):
     """No pixel inside `rect` may wear one of the `forbidden` colours.
 
     Used on a window that is opaque over its whole rect with nothing above
     it: a pixel there carrying a colour that belongs somewhere else on the
     screen was deposited by the cursor's save-under, not painted by the
-    window. Park footprints are excluded -- the arrow itself is legitimately
-    foreign-coloured (black and white) but its own colours are never in
+    window. The cursor's footprints are excluded -- the shape itself is
+    legitimately foreign-coloured but its own colours are never in
     `forbidden`, and skipping the rects keeps that independent."""
     left, top = max(rect[0], 0), max(rect[1], 0)
     right, bottom = min(rect[2], dump.width), min(rect[3], dump.height)
@@ -182,7 +287,7 @@ def foreign_pixel_check(failures, dump, rect, forbidden, parks, what):
     found = collections.Counter()
     for py in range(top, bottom):
         for px in range(left, right):
-            if any(p[0] <= px < p[0] + CURSOR_W and p[1] <= py < p[1] + CURSOR_H for p in parks):
+            if any(in_rect(f, px, py) for f in footprints):
                 continue
             colour = dump.at(px, py)
             for name, value in forbidden:
@@ -252,6 +357,24 @@ def main():
     if not A_ACTIVE.search(text):
         failures.append("A never reported activation after being clicked")
 
+    # The shape pipeline's own markers: B's process was handed B's I-beam
+    # (WM_WINE_SETCURSOR reached the owning process and it decoded the
+    # handle), and no set_cursor request was ever refused -- a refused one
+    # is a shape that never reached the server (server/queue.c answers
+    # ERROR_INVALID_CURSOR_HANDLE, the one failure that handler has).
+    shapes = {int(m.group("res")) for m in CURSOR_SET.finditer(text)}
+    if OCR_IBEAM not in shapes:
+        failures.append(
+            f"B's process never published its I-beam (no 'gui4 cursor ... res={OCR_IBEAM}' "
+            f"marker; shapes seen: {sorted(shapes)})"
+        )
+    if OCR_NORMAL not in shapes:
+        failures.append(f"no process ever published the arrow (res={OCR_NORMAL})")
+    if CURSOR_REFUSED.search(text):
+        failures.append("the server refused a set_cursor request (see the log)")
+
+    arrow, ibeam = Cursor("ocr_normal.cur"), Cursor("ocr_ibeam.cur")
+
     # --- the pixel half -----------------------------------------------------
     dump1, dump2, dump3 = Dump(args.ppm1), Dump(args.ppm2), Dump(args.ppm3)
     for dump in (dump1, dump2, dump3):
@@ -281,7 +404,7 @@ def main():
     exposed = (a_rect[0], a_rect[1], min(a_rect[2], b_wrect[0]), a_rect[3])
     dominant_check(failures, dump1, exposed, A_FILL, "dump1 A's exposed part")
     dominant_check(failures, dump1, b_crect, B_FILL, "dump1 B's client area")
-    cursor_check(failures, dump1, park1, background, "dump1 cursor")
+    cursor_check(failures, dump1, park1, background, arrow, "dump1 cursor")
 
     # Dump 2: B at its reported new place; what it uncovered is repaired.
     delta = (b_moved[0] - b_wrect[0], b_moved[1] - b_wrect[1])
@@ -302,7 +425,7 @@ def main():
                 continue
             if a_rect[0] <= px < a_rect[2] and a_rect[1] <= py < a_rect[3]:
                 continue
-            if park2[0] <= px < park2[0] + 12 and park2[1] <= py < park2[1] + 20:
+            if in_rect(arrow.footprint(park2), px, py):
                 continue  # the parked cursor, if the park point falls here
             vacated_total += 1
             if close(dump2.at(px, py), background):
@@ -312,26 +435,27 @@ def main():
             f"dump2 vacated area: only {vacated_bg}/{vacated_total} pixels returned "
             f"to the background"
         )
-    cursor_check(failures, dump2, park2, background, "dump2 cursor")
+    cursor_check(failures, dump2, park2, background, arrow, "dump2 cursor")
     # Nothing repaints B after the drag, so the drag's own cursor traffic --
-    # the arrow rode B's caption across the screen -- has to have left the
+    # the cursor rode B's caption across the screen -- has to have left the
     # window clean by itself.
     foreign_pixel_check(
         failures, dump2, b_moved,
         [("desktop background", background), ("A's fill", A_FILL)],
-        [park2], "dump2 B's moved window rect"
+        [arrow.footprint(park2)], "dump2 B's moved window rect"
     )
 
     # Dump 3: the cursor sits inside B's client area and B has repainted
-    # under it. Both halves of the stomp are graded -- the arrow survived
+    # under it. Both halves of the stomp are graded -- the cursor survived
     # the flush, and B's fill (not a hole, and not a leftover of what the
-    # cursor was over before) is what surrounds it.
-    cursor_check(failures, dump3, park3, B_FILL, "dump3 cursor over B")
+    # cursor was over before) is what surrounds it. The shape is B's own:
+    # the I-beam its class declares (gui4b.c), not the desktop's arrow.
+    cursor_check(failures, dump3, park3, B_FILL, ibeam, "dump3 cursor over B")
     dominant_check(failures, dump3, b_crect2, B_FILL, "dump3 B's client area (cursor inside)")
     foreign_pixel_check(
         failures, dump3, b_moved,
         [("desktop background", background), ("A's fill", A_FILL)],
-        [park3], "dump3 B's moved window rect"
+        [ibeam.footprint(park3)], "dump3 B's moved window rect"
     )
 
     if failures:
