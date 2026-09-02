@@ -38,6 +38,7 @@
 #include "drivers/condrv.h"
 #include "drivers/fb.h"
 #include "drivers/hid.h"
+#include "drivers/usb/hidboot.h"
 #include "drivers/net/netd.h"
 #include "drivers/snd.h"
 #include "drivers/virtio/blk.h"
@@ -488,6 +489,11 @@ static void KiTestMainThread(void *context)
 
     /* GUI-1: \Device\Input0 over virtio-input (HACK-002). No input device
      * means no device published -- an open then fails honestly. */
+    /* USB-1: enumerate the xHCI's ports and put a boot keyboard/mouse in
+     * service, before the streams are published over whichever source
+     * exists. Sleeps (port reset, device requests), so it runs here and
+     * not in IoInitializeTransport. */
+    UsbHidInitialize();
     HidInitialize();
 
     /* AUD-1: \Device\Snd* over virtio-snd (HACK-007). Same rule: no sound

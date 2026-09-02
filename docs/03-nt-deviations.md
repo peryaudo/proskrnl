@@ -4441,7 +4441,8 @@ and each is logged in `docs/10-hacks-ledger.md`:
 - **`\Device\Fb0`** (HACK-001, GUI-1, **built**) — map the framebuffer to user mode; NT would
   own this via a display driver behind win32k. See "GUI-1 notes" below.
 - **`\Device\Input0`** (HACK-002, GUI-1, **built**) — raw input stream to user mode; NT routes
-  this through win32k/csrss. See "GUI-1 notes" below.
+  this through win32k/csrss. See "GUI-1 notes" below. Since USB-1 the same two devices can be
+  fed by a USB HID boot keyboard/mouse over xHCI instead of virtio-input — "USB-1 notes" below.
 - **wineserver-lite as a desktop server** — a user-mode server holding desktop state. Not
   a hack against NT so much as a return to NT 3.1's actual architecture (see `docs/07`).
 
@@ -5060,6 +5061,87 @@ rather than permanently-wrong.
   window has been foreground before (`set_foreground_window`, `queue->input->user_time`).
   Show-order determinism (B created after A) is now pinned in gui3b/gui4b; click-driven
   activation (the gui4 way) is exempt because a click *is* fresh user input.
+
+## USB-1 notes (`\Device\Input0`/`\Device\Input1` over a USB HID boot device)
+
+**A second source, not a second device.** `drivers/usb/xhci.c` brings up one xHCI host
+controller (found by PCI class code 0Ch/03h/30h, so the same probe finds any vendor's
+silicon and QEMU's `qemu-xhci` alike) and addresses the devices on its root ports;
+`drivers/usb/hidboot.c` keeps the first boot-protocol keyboard and the first boot-protocol
+mouse it finds and feeds them into the same `\Device\Input0`/`\Device\Input1`
+`drivers/hid.c` already publishes, through one source descriptor (`HID_SOURCE`) both
+virtio-input and USB fill. The streams' contract (`drivers/hidproto.h`) is unchanged for a
+consumer: whole 8-byte evdev events, blocking reads, one exclusive reader. When both a
+virtio-input function and a USB device are present the virtio one wins, and the USB one
+says on serial that it came up — a stated policy, not a race.
+
+**Boot protocol only, by decision.** HID 1.11 §4.3 / Appendix B fixes two report formats
+a device with `bInterfaceSubClass` 1 must offer: the 8-byte keyboard report (modifier
+bits, six usages) and the 3+-byte mouse report (buttons, X, Y as signed deltas; a fourth
+byte is the wheel on every device seen, QEMU's included). The driver issues `SET_PROTOCOL`
+(boot) and `SET_IDLE(0)` and parses exactly that. A HID interface without the boot
+subclass — QEMU's `usb-tablet` is one (`hw/usb/dev-hid.c desc_iface_tablet`, subclass 0,
+and its report is six bytes of absolute coordinates whatever protocol is set) — is named
+on serial and left addressed but unconfigured; the report-descriptor parser that would
+drive it is unbuilt and says so (Art. 12). Hubs and every other class are refused the
+same way, as is a fifth connected device (the frame budget is four), a controller with
+64-byte contexts, or one wanting more than sixteen scratchpad pages.
+
+**The keys are renumbered, never translated.** A boot keyboard reports Keyboard/Keypad-page
+usages; the wire format is evdev `KEY_*`. The table between them is generated
+(`drivers/usb/usbkeymap.h`, `tools/gen_usb_keymap.py`) from the pinned
+`third_party/keycodemapdb` — the same database and revision the pinned QEMU builds its own
+`usb-kbd` encoding from — and checked by `make gen-check`, on Article 4's reasoning: it is
+the contract on both sides, and a number recalled from memory is indistinguishable from a
+wrong one. It is a renumbering of the same physical key (usage 04h and `KEY_A` are both
+"the key in the A position"); the layout that turns it into a character stays in user32
+above the boundary, exactly as for virtio-input.
+
+**The pointer is relative, and the contract says so.** A boot mouse has no absolute axes.
+`IOCTL_PRSHID_GET_ABS_INFO` answers all zeros (min == max on both axes — the device
+published no range, reported verbatim as the tablet's is), and motion arrives as
+`EV_REL REL_X`/`REL_Y` deltas. The raw-input pump (`rawinput.c`) injects those as a
+`MOUSEEVENTF_MOVE` without `ABSOLUTE` — `mouse_event`'s own relative semantics, clipped by
+the server (`queue.c queue_mouse_message`) — and reports the position the server answered
+in its `gui4 ptr` line. `HID_REL_X`/`HID_REL_Y` are the only additions to
+`drivers/hidproto.h`.
+
+**Polled, not interrupt-driven, like virtio-input.** The controller's event ring is drained
+from the readers' `TryRead` at their 1 kHz nap (`docs/19` §11f's policy, extended to a
+second polled input source); `USBCMD.INTE` stays clear and no vector is assigned. One
+interrupt-IN TRB is kept in flight per device and re-posted from the drain that consumed
+it; the device's own report queue (16 entries on QEMU's model) and a 256-event FIFO per
+device are the buffers, and a report that does not fit is dropped whole and counted on
+serial, never delivered half. The drain is not re-entrant and asserts it: the kernel is
+uniprocessor and non-preemptive (Art. 3), and no wait exists inside it, so the two readers
+cannot interleave.
+
+**Two phases, because the boot order forces them.** Register mapping, every DMA frame (24
+pages), the host-controller reset and the run bit happen in `IoInitializeTransport` — before
+`MiFreezeKernelPml4`, before the scheduler, with bounded register spins as the only waits.
+Port reset (with USB 2.0's debounce, reset-recovery and `SET_ADDRESS` intervals honoured by
+naps), Enable Slot / Address Device, the descriptor reads and the class requests run on the
+first kernel thread (`UsbHidInitialize`, right before `HidInitialize`), where a millisecond
+nap exists. Firmware ownership is taken through the USB Legacy Support capability when the
+controller has one (§4.22.1); QEMU's has none, and the driver says so.
+
+**No output path.** Keyboard LEDs (`SET_REPORT`) have no consumer above the boundary, exactly
+as virtio-input's statusq has none, and `\Device\Input0` still has no `Write` op. A halted
+endpoint (a STALL, transaction errors past the retry count) stops the device loudly; the
+`Reset Endpoint` / `Set TR Dequeue Pointer` recovery is unbuilt, and the reader then blocks on
+a stream that has ended rather than on fabricated events.
+
+**The G5 adaptation** is the framebuffer's and the tablet's, restated for USB: no oracle
+has these devices, so the conviction is that input QEMU injects from outside — QMP
+`send-key`, `input-send-event` `rel` and `btn`, routed by QEMU into its own `usb-kbd` and
+`usb-mouse` models and through its own xHCI model's DMA — comes back out of the read path
+and the pump as the exact key (`gui4 A char=61`), the exact shifted key (the modifier
+byte: `char=41`), a click on the window under the cursor, and the exact cursor delta
+(`tests/run/run.sh usbinput` asserts every relative move as base + delta against the
+server's echo). The keyboard attaches at high speed and the mouse, on `usb_version=1`, at
+full speed, so one boot covers both speeds' EP0 sizes; the full-speed device's
+`bMaxPacketSize0` is the default 8, so the Evaluate Context path that would correct a
+different one is written but unexercised under QEMU, and is said to be.
 
 ## GUI-5 notes
 

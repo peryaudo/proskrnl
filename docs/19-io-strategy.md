@@ -496,9 +496,10 @@ and respects the §8.1 completion hold.
 
 ### f. What this deliberately does not do
 
-No INTx/IOAPIC bring-up; no interrupt for virtio-input or the serial console (their
-poll-and-nap loops are convicted by no consumer — a 1 kHz input poll is not a cost the
-way a per-transfer busy-spin is, and `docs/20` §6 keeps their queues single-reader); no
+No INTx/IOAPIC bring-up; no interrupt for virtio-input, the serial console, or (USB-1)
+the xHCI event ring behind a USB HID keyboard/mouse (their poll-and-nap loops are
+convicted by no consumer — a 1 kHz input poll is not a cost the way a per-transfer
+busy-spin is, and `docs/20` §6 keeps their queues single-reader); no
 `VIRTIO_F_EVENT_IDX`/suppression negotiation (§11c); no interrupt coalescing, threading,
 or DPC split — the drain stays a plain top half (`docs/03`: no IRQL, no DPCs). Each of
 these is a separate change against the same seam if a consumer ever convicts it.

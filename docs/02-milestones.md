@@ -856,6 +856,22 @@ lives in atl100 — without both, shell32's CLSIDs never land and the file windo
 *Optional GUI-7:* the ReactOS shell (taskbar/Start menu/icons) — a separate integration
 effort with a two-upstream cost; see `docs/06`.
 
+## USB-1 — USB HID input over xHCI ✅
+
+The first piece of the bare-metal box `docs/00` promises: `\Device\Input0`/`\Device\Input1`
+fed by a USB HID **boot-protocol** keyboard and mouse behind an xHCI host controller
+(`drivers/usb/`), on a boot with no virtio-input at all. HACK-002 grows a second source,
+not a second device (`docs/10`); the contract gains a relative pointer (`docs/03` "USB-1
+notes"). Boot protocol only, polled, no hubs, no hot-plug, no LEDs — each refused by name.
+**Done when:** `tests/run/run.sh usbinput` is green — under QEMU's `qemu-xhci` + `usb-kbd` +
+`usb-mouse`, QMP-injected keys, a shifted key, clicks and relative moves come back out of
+the read path and the pump as the exact key, the right window, and the exact cursor delta.
+
+**Done.** The controller is found by class code, so the same probe applies off the emulator;
+what a real box will add is a hub in the way (the report-descriptor HID class and the hub
+class are the two named gaps) and firmware that owns the controller (the Legacy Support
+handoff is written and unexercised under QEMU).
+
 ## Audio path (opt-in, additive — see docs/23)
 
 Like the GUI path: outside the CUI core, subtractable, every NT-absent addition a

@@ -24,6 +24,7 @@
 #include "drivers/hid.h"
 #include "drivers/hidproto.h"
 #include "drivers/virtio/input.h"
+#include "drivers/usb/hidboot.h"
 #include "kernel/init/panic.h"
 #include "kernel/io/io.h"
 #include "kernel/io/vfs.h"
@@ -37,11 +38,13 @@
  * FCB is the CondrvSerialFcb shape: the Io close hooks key off a non-NULL
  * fsContext and a valid IO_FCB, and the share-access engine needs somewhere
  * to keep this device's one open's slots. Handlers find their stream
- * through file->device->context (one publication path, G10/Art. 11). */
+ * through file->device->context (one publication path, G10/Art. 11). The
+ * source is whichever driver's device is behind the stream (drivers/hid.h
+ * HID_SOURCE): the streams do not know or care which. */
 typedef struct HID_STREAM
 {
     IO_FCB fcb;
-    VIO_INPUT_INSTANCE *source;
+    HID_SOURCE source;
     const WCHAR *queryName; /* the QueryName answer, L"\\Input0" shape */
 } HID_STREAM;
 
@@ -139,7 +142,7 @@ static NTSTATUS HidInputRead(PFILE_OBJECT file, void *buffer, ULONG length, ULON
     for (;;)
     {
         ULONG got = 0;
-        while (got < capacity && VioInputTryReadEvent(stream->source, &out[got]))
+        while (got < capacity && stream->source.TryRead(stream->source.context, &out[got]))
         {
             got++;
         }
@@ -163,7 +166,8 @@ static NTSTATUS HidInputRead(PFILE_OBJECT file, void *buffer, ULONG length, ULON
 }
 
 /* The pointer's one verb: its ABS_INFO ranges, as the device published
- * them (cached at init; this path never touches MMIO). */
+ * them (cached at init; this path never touches MMIO). A relative pointer
+ * published none, and answers all zeros (drivers/hidproto.h). */
 static NTSTATUS HidPointerDeviceControl(PFILE_OBJECT file, ULONG code, const void *input,
                                         ULONG inputLength, void *output, ULONG outputLength,
                                         ULONG_PTR *infoOut, IO_CONTROL_CONTEXT *request)
@@ -179,13 +183,8 @@ static NTSTATUS HidPointerDeviceControl(PFILE_OBJECT file, ULONG code, const voi
         {
             return STATUS_BUFFER_TOO_SMALL;
         }
-        HID_ABS_INFO info;
-        info.minX = stream->source->absX.min;
-        info.maxX = stream->source->absX.max;
-        info.minY = stream->source->absY.min;
-        info.maxY = stream->source->absY.max;
-        memcpy(output, &info, sizeof(info));
-        *infoOut = sizeof(info);
+        memcpy(output, &stream->source.abs, sizeof(HID_ABS_INFO));
+        *infoOut = sizeof(HID_ABS_INFO);
         return STATUS_SUCCESS;
     }
 
@@ -223,33 +222,38 @@ static const IO_VFS_OPS HidPointerOps = {
 
 void HidInitialize(void)
 {
-    if (VioInputKeyboard())
+    /* virtio-input first, USB HID second: on the one machine that has both
+     * (a QEMU with both device models on its command line) the virtio
+     * device wins, and the USB one said on serial that it came up. */
+    HID_SOURCE source;
+    if (VioInputKeyboardSource(&source) || UsbHidKeyboardSource(&source))
     {
         static const WCHAR keyboardName[] = WSTR("\\Input0");
         IopInitializeFcb(&HidKeyboardStream.fcb);
-        HidKeyboardStream.source = VioInputKeyboard();
+        HidKeyboardStream.source = source;
         HidKeyboardStream.queryName = keyboardName;
         IoPublishDevice(WSTR("\\Device\\Input0"), &HidInputOps, &HidKeyboardStream,
                         FILE_DEVICE_KEYBOARD);
-        DbgPrint("hid: \\Device\\Input0 published\n");
+        DbgPrint("hid: \\Device\\Input0 published (%s)\n", source.name);
     }
     else
     {
-        DbgPrint("hid: no virtio-input keyboard; \\Device\\Input0 not published\n");
+        DbgPrint("hid: no keyboard source; \\Device\\Input0 not published\n");
     }
 
-    if (VioInputPointer())
+    if (VioInputPointerSource(&source) || UsbHidPointerSource(&source))
     {
         static const WCHAR pointerName[] = WSTR("\\Input1");
         IopInitializeFcb(&HidPointerStream.fcb);
-        HidPointerStream.source = VioInputPointer();
+        HidPointerStream.source = source;
         HidPointerStream.queryName = pointerName;
         IoPublishDevice(WSTR("\\Device\\Input1"), &HidPointerOps, &HidPointerStream,
                         FILE_DEVICE_MOUSE);
-        DbgPrint("hid: \\Device\\Input1 published (pointer)\n");
+        DbgPrint("hid: \\Device\\Input1 published (pointer, %s, abs %u..%u,%u..%u)\n", source.name,
+                 source.abs.minX, source.abs.maxX, source.abs.minY, source.abs.maxY);
     }
     else
     {
-        DbgPrint("hid: no virtio-input pointer; \\Device\\Input1 not published\n");
+        DbgPrint("hid: no pointer source; \\Device\\Input1 not published\n");
     }
 }

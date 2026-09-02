@@ -104,7 +104,11 @@ proskrnl/
 │   ├── condrv.c                     # M9: ConDrv-style console device, COM1 serial
 │   │                                #   transport both ways        ★ HACK-004
 │   ├── fb.c / fbproto.h             # GUI-1: \Device\Fb0            ★ HACK-001
-│   └── hid.c / hidproto.h           # GUI-1: \Device\Input0         ★ HACK-002
+│   ├── hid.c / hidproto.h           # GUI-1: \Device\Input0         ★ HACK-002
+│   └── usb/                         # USB-1: the bare-metal input path behind HACK-002
+│       ├── xhci.c                   # xHCI host controller: ports, slots, EP0, one interrupt IN
+│       ├── hidboot.c                # HID boot-protocol keyboard/mouse -> \Device\Input0/1
+│       └── usbkeymap.h              # generated: HID usage -> evdev (tools/gen_usb_keymap.py)
 │
 ├── fs/
 │   ├── fat32/

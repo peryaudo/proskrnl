@@ -62,13 +62,23 @@ Status:     active (GUI-1: virtio-input keyboard, eventq polled from a
             reader), FILE_DEVICE_MOUSE, plus one ioctl reporting the
             device's ABS_INFO range verbatim. The one reader of both
             streams is wineserver-lite's raw-input pump, HACK-003;
-            GUI clients never open the devices)
+            GUI clients never open the devices; USB-1: a SECOND event
+            source behind the same two devices -- a USB HID boot-protocol
+            keyboard and mouse over an xHCI host controller
+            (drivers/usb/), for a machine with no virtio-input -- through
+            hid.c's one publication path (virtio first when both exist).
+            Input1 may then be a RELATIVE pointer: GET_ABS_INFO answers
+            all zeros and motion arrives as EV_REL REL_X/REL_Y. Polled
+            event ring, no IRQ, boot protocol only, no LED/output path)
 Introduced: GUI-1
 Not in NT:  NT routes raw input through win32k / csrss into the input queue.
 Reason:     win32u needs a raw keyboard/mouse event source.
 Scope:      drivers/hid.c ; drivers/hid.h ; drivers/hidproto.h ;
             drivers/virtio/input.c ; drivers/virtio/input.h ;
-            kernel/io/file.c + kernel/init/main.c (the two init calls) ;
+            drivers/usb/xhci.c ; drivers/usb/xhci.h ; drivers/usb/hidboot.c ;
+            drivers/usb/hidboot.h ; drivers/usb/usbkeymap.h +
+            tools/gen_usb_keymap.py (USB-1: the second source) ;
+            kernel/io/file.c + kernel/init/main.c (the init calls) ;
             user/wine/wineserver-lite/server/rawinput.c (the reader) ;
             user/wine/dlls/winefb.drv/cursor.c (GUI-4: the drawn cursor --
             since the HCURSOR change the window's real shape, decoded in the
@@ -88,6 +98,23 @@ absolute-axis range the device itself published, so scaling lives in user
 mode and no QEMU constant is baked on either side. Which virtio function is
 the pointer is the device's own claim (its `EV_BITS` advertise `EV_ABS`),
 never PCI enumeration order.
+
+USB-1 adds the second source without a second device: `drivers/usb/` is an
+xHCI host-controller driver plus a HID boot-protocol client, and it feeds
+the same `\Device\Input0`/`\Device\Input1` through the same `hid.c`, which
+picks whichever source exists (virtio-input first, so a QEMU with both
+device models on its command line behaves as before). What it publishes is
+still the device's own claim: a boot mouse has no absolute axes, so its
+`GET_ABS_INFO` answers zeros and its motion is `EV_REL`; its keys are the
+device's usages renumbered to evdev by a table generated from the same
+database QEMU encodes them from (`tools/gen_usb_keymap.py`), never a
+layout. Everything a boot-protocol device cannot say (a report descriptor,
+a tablet, a hub, a stalled endpoint, keyboard LEDs) is refused by name on
+serial, never approximated (Art. 12). The bus driver publishes nothing of
+its own and is therefore not a ledger item, like `drivers/pci.c` and
+`drivers/virtio/pci.c`; deleting `drivers/usb/`, its Makefile lines, its two
+init calls and `hid.c`'s two `UsbHid*Source` arms restores the virtio-only
+kernel intact (Art. 7).
 
 ## HACK-003: wineserver-lite as a user-mode desktop server
 

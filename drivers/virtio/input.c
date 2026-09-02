@@ -235,3 +235,43 @@ int VioInputTryReadEvent(VIO_INPUT_INSTANCE *input, HID_INPUT_EVENT *event)
     VioNotifyQueue(&input->eventQueue);
     return 1;
 }
+
+static int VioInputTryReadSource(void *context, HID_INPUT_EVENT *event)
+{
+    return VioInputTryReadEvent(context, event);
+}
+
+static void VioInputFillSource(VIO_INPUT_INSTANCE *input, HID_SOURCE *source)
+{
+    memset(source, 0, sizeof(*source));
+    source->TryRead = VioInputTryReadSource;
+    source->context = input;
+    source->name = "virtio-input";
+    if (input->isPointer)
+    {
+        source->abs.minX = input->absX.min;
+        source->abs.maxX = input->absX.max;
+        source->abs.minY = input->absY.min;
+        source->abs.maxY = input->absY.max;
+    }
+}
+
+BOOLEAN VioInputKeyboardSource(HID_SOURCE *source)
+{
+    if (VioInputKeyboardInstance == 0)
+    {
+        return FALSE;
+    }
+    VioInputFillSource(VioInputKeyboardInstance, source);
+    return TRUE;
+}
+
+BOOLEAN VioInputPointerSource(HID_SOURCE *source)
+{
+    if (VioInputPointerInstance == 0)
+    {
+        return FALSE;
+    }
+    VioInputFillSource(VioInputPointerInstance, source);
+    return TRUE;
+}

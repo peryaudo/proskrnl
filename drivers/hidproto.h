@@ -37,6 +37,13 @@
  * translated or scaled here: scaling to screen pixels is user mode's,
  * exactly as scancode translation is.
  *
+ * Since USB-1 the pointer may be a RELATIVE device -- a USB HID boot
+ * mouse (drivers/usb/hidboot.c) -- which publishes no absolute axes at
+ * all: GET_ABS_INFO then answers all zeros (min == max on both axes), and
+ * motion arrives as EV_REL REL_X / REL_Y deltas, as unscaled as the abs
+ * values are. A device with both kinds of axis does not exist here; a
+ * consumer that sees a zero range treats the stream as relative.
+ *
  * Buffering and overflow are the device's, not ours: QEMU's virtio-input
  * holds a 64-entry eventq and drops whole NEW reports when it is full
  * (pinned tree hw/input/virtio-input.c virtio_input_send,
@@ -87,8 +94,11 @@ _Static_assert(sizeof(HID_INPUT_EVENT) == 8, "virtio_input_event is 8 bytes (vir
 #define HID_ABS_X 0x00
 #define HID_ABS_Y 0x01
 
-/* EV_REL axis codes (input-event-codes.h REL_*): what QEMU's tablet emits
- * beyond the abs axes. */
+/* EV_REL axis codes (input-event-codes.h REL_*): the wheel, which QEMU's
+ * tablet emits beyond the abs axes, and the two motion axes of a relative
+ * pointer (USB-1). */
+#define HID_REL_X     0x00
+#define HID_REL_Y     0x01
 #define HID_REL_WHEEL 0x08
 
 /* EV_KEY pointer-button codes (input-event-codes.h BTN_*): well above the
