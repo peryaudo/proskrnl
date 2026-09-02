@@ -170,6 +170,25 @@ local macOS Wine.
 
 ## Status
 
+**ACPI complete** (`docs/02` "ACPI") — the first step toward bare metal: the
+kernel reads its own ACPI tables (`arch/x86_64/acpi.c`: RSDP → RSDT/XSDT →
+FADT, the DSDT's `\_S5` by a bounded AML scan, MADT) and **powers the machine
+off through ACPI S5** (`arch/x86_64/power.c` `KiPowerOff`, the ACPI 6.5
+§16.3.1 / §16.1.7 sequences), so ring-3 `NtShutdownSystem` and the
+interactive session's end no longer depend on QEMU's isa-debug-exit device;
+the port stays only as the said-on-serial fallback. Pinned by `[KTEST] ACPI`
+(the tables held to the hardware they describe — the MADT against
+`IA32_APIC_BASE`, and under QEMU against the q35 device model's own PM base
+read back from the LPC bridge) and by `tests/run/run.sh acpi` (a standard
+boot ended through S5, QEMU exiting **0 on its own** — the one status the
+debug port cannot produce). Couldn't be achieved within the milestone: no
+AML interpreter (a `\_S5` Method, SSDTs), no PM timer, no `RESET_REG` reboot
+(still the 8042 pulse), no hardware-reduced platforms, and the
+`SystemFirmwareTableInformation` "ACPI" provider stays refused (its accessor
+exists). What's next: the remaining bare-metal gaps that ACPI now makes
+tractable — the IOAPIC for INTx devices (`docs/19` §11a) and an AHCI/NVMe
+disk beside virtio — or continue the console/GUI winetest un-parking.
+
 **M11 console rearchitecture complete** (issue #232) — consoles are
 **per-client and on demand**, wineserver's own object model
 (`server/console.c`) implemented by `drivers/condrv.c`: every

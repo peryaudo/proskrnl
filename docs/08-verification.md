@@ -378,7 +378,13 @@ echo "exit: $?"
   apart, made two legs unable to share a bake, and made a FILTERED run yet another image
   whose file on disk recorded which subset had last been asked for.
 - **isa-debug-exit** — the kernel writes a value to port 0xf4; QEMU exits with a derived
-  code. In-kernel test verdicts reach the host as a process exit code.
+  code. In-kernel test verdicts reach the host as a process exit code. The *product*
+  powers off through ACPI S5 (`arch/x86_64/power.c`: the ring-3 `NtShutdownSystem` and
+  the interactive session's end, the paths a bare-metal boot runs); the test boot's
+  verdict end keeps the debug port — its status carries the in-kernel total, and the
+  panic path's status 3 is the one host-visible panic signature — unless
+  `GUEST_POWEROFF=1` asks for S5, which `tests/run/run.sh acpi` does because 0 is the one
+  exit status the debug port cannot produce, so QEMU exiting 0 convicts the S5 write.
 - **timeout + -no-reboot** — hang, panic, and success all become finite-time processes
   with an exit code and a log. (Hangs are routine early; this is the safety net.)
 - **structured log prefixes** — `[KTEST] name PASS` / `[PANIC] …` / `[ASSERT] file:line`.

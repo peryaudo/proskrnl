@@ -2798,6 +2798,17 @@ static const struct
      * BECAUSE it changes the shape of a serial line, and every harness grep
      * is anchored at one — a profiled boot is a boot you asked for. */
     {"opt/org.proskrnl/profile", WSTR("Profile"), 0},
+    /* How the TEST boot's verdict end stops the machine (tools/qemu.sh
+     * GUEST_POWEROFF=1): 1 = through ACPI S5 (arch/x86_64/power.c), the way
+     * the product paths — ring-3 NtShutdownSystem, the interactive
+     * session's end — always do; 0 (the default) = the isa-debug-exit port,
+     * whose status carries the in-kernel total and keeps the panic path's
+     * status distinguishable from a clean S5 exit (docs/08). Off by default
+     * because it changes what QEMU's exit status means for every leg;
+     * tests/run/run.sh acpi asks for it, because QEMU exiting 0 on its own
+     * is then the proof that the S5 write — not the debug port — ended the
+     * machine. */
+    {"opt/org.proskrnl/poweroff", WSTR("PowerOff"), 0},
     /* "Does this volume carry a Windows userland" is NOT here either: like
      * `ShellBoot` above it is DERIVED, from `Leg` (CmpNoUserlandLegs below,
      * which carries the reasoning), and published beside these as `Userland`.

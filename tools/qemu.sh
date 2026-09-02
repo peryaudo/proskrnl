@@ -311,6 +311,18 @@ if [[ "${GUEST_STRESS:-0}" != 0 ]]; then
     FWCFG_ARGS+=(-fw_cfg name=opt/org.proskrnl/stress,string=1)
 fi
 
+# GUEST_POWEROFF=1: the TEST boot's verdict end powers the machine off through
+# ACPI S5 (arch/x86_64/power.c) instead of the isa-debug-exit port. Off by
+# default because it changes what QEMU's exit status means: the debug port
+# yields (code << 1) | 1 -- always odd -- while an S5 exit is QEMU's own clean
+# status 0, the same as any guest shutdown. That distinction is exactly what
+# tests/run/run.sh acpi is built on (0 convicts the S5 write; the product
+# paths -- ring-3 NtShutdownSystem, the interactive session's end -- always
+# power off through S5 regardless of this knob).
+if [[ "${GUEST_POWEROFF:-0}" != 0 ]]; then
+    FWCFG_ARGS+=(-fw_cfg name=opt/org.proskrnl/poweroff,string=1)
+fi
+
 
 # The kernel's CMP_QEMU_STRING_MAX (kernel/cm/registry.c), mirrored here so a
 # value the guest cannot take is caught BEFORE the boot, naming the item,
@@ -633,7 +645,16 @@ GRACE="${GRACE:-5}"
     fi
     kill -9 "$QPID" 2>/dev/null
 ) & KPID=$!
-wait "$QPID" 2>/dev/null || true
+# QEMU's own exit status, recorded beside the log for the legs that read it
+# (tests/run/run.sh acpi): 0 = the guest shut itself down with no code (an
+# ACPI S5 write -- the pinned tree's hw/acpi/core.c acpi_pm1_cnt_write
+# requests a plain guest shutdown, and system/runstate.c exits EXIT_SUCCESS
+# for it); odd = the isa-debug-exit port, (code << 1) | 1; 137 = the killer
+# subshell above (the #56 grace path, or a wedge). The verdict below stays
+# the PASS_RE grep -- the status is a second fact, not the verdict.
+QEMU_STATUS=0
+wait "$QPID" 2>/dev/null || QEMU_STATUS=$?
+echo "$QEMU_STATUS" > "${QEMU_STATUS_FILE:-$LOG.status}" 2>/dev/null || true
 kill "$KPID" 2>/dev/null || true
 wait "$KPID" 2>/dev/null || true
 
