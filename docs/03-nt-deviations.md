@@ -4952,6 +4952,14 @@ The SHAPE is still not the per-window `HCURSOR`: `WM_WINE_SETCURSOR` is delivere
 process owning the window under the cursor, and honoring shapes would mean tracking that
 cross-process for zero milestone value.
 
+The ordinary `set_caret_info` refusal is no longer reported as a failed request: `NtUserBeginPaint`
+hides and `NtUserEndPaint` shows the caret of every window they paint (`dlls/win32u/dce.c`), and
+the pinned handler answers `STATUS_ACCESS_DENIED` for a window that does not own the caret —
+on Wine the silent `FALSE` `ShowCaret`/`HideCaret` return for such a window, here two serial
+lines per paint of every caret-less window, dozens per mouse move over a hot-tracking toolbar,
+which read as a denied "cursor" change on every hover. It joins `STATUS_PENDING` in the
+dispatcher's list of replies that are answers, not failures (`shim.c`).
+
 Residual, named: the vacated rect over a *window* is repainted by that window's own thread
 (rect-scoped invalidation — a whole-window repaint per mouse motion would be a repaint storm
 on anything console-sized), so a wedged window keeps the trail until it pumps again. Over

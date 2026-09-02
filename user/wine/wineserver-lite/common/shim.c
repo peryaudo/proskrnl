@@ -967,10 +967,22 @@ static unsigned int dispatch_request( struct __server_request_info *info, struct
         prsk_log( "[TRACE] wineserver-lite: %s -> %08x reply=%08x,%08x\n", prsk_req_names[req],
                   current->error, body[0], body[1] );
     }
-    else if (current->error && current->error != STATUS_PENDING)
+    else if (current->error && current->error != STATUS_PENDING &&
+             !(req == REQ_set_caret_info && current->error == STATUS_ACCESS_DENIED))
         /* PENDING is not a swallowed failure: it is get_message's ordinary
          * empty-queue reply (server/queue.c), and reporting it printed one
          * line per message-loop iteration.
+         *
+         * set_caret_info's ACCESS_DENIED is the same kind of ordinary reply:
+         * NtUserBeginPaint hides and NtUserEndPaint shows the caret of
+         * EVERY window they paint (dlls/win32u/dce.c), and the handler
+         * answers STATUS_ACCESS_DENIED for any window that does not own the
+         * caret (server/queue.c DECL_HANDLER(set_caret_info)) -- two lines
+         * per paint of every caret-less window, dozens per mouse move over
+         * a hot-tracking toolbar. On Wine that is the silent FALSE
+         * ShowCaret/HideCaret return for a window without the caret
+         * (documented as such); here it read as a denied request on every
+         * hover.
          *
          * The pid/tid are here because with more than one client "which
          * process asked" is the first question every failure raises, and
