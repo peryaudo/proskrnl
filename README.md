@@ -170,6 +170,26 @@ local macOS Wine.
 
 ## Status
 
+**USB-1 USB HID input complete** — the first piece of the bare-metal box:
+`\Device\Input0`/`\Device\Input1` can now be fed by a USB HID
+**boot-protocol** keyboard and mouse behind an xHCI host controller
+(`drivers/usb/xhci.c`, `drivers/usb/hidboot.c`), on a boot with no
+virtio-input at all. The controller is found by PCI class code, so the
+same probe applies off the emulator; the devices are classified by their
+own interface descriptors; the keys are renumbered from HID usages to
+evdev by a table generated from the pinned `keycodemapdb` (`make
+gen-check` keeps it honest); the pointer is relative, which the stream
+contract and the raw-input pump learned (`docs/03` "USB-1 notes",
+HACK-002 in `docs/10`). Convicted by `tests/run/run.sh usbinput`:
+QMP-injected keys, a shifted key, clicks and relative moves come back
+out as the exact key, the right window and the exact cursor delta.
+Couldn't be achieved within the milestone: only boot protocol (a
+report-descriptor HID device such as QEMU's `usb-tablet` is refused by
+name), no hubs, no hot-plug, no keyboard LEDs, no endpoint recovery after
+a STALL — each refuses loudly rather than approximating. What's next: a
+hub in the way on a real box, and the firmware handoff and port-timing
+paths that are written but unexercised under QEMU.
+
 **ACPI complete** (`docs/02` "ACPI") — the first step toward bare metal: the
 kernel reads its own ACPI tables (`arch/x86_64/acpi.c`: RSDP → RSDT/XSDT →
 FADT, the DSDT's `\_S5` by a bounded AML scan, MADT) and **powers the machine
