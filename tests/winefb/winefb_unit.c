@@ -462,8 +462,300 @@ static void test_activate_raises(void)
     ok(unit_raise_count() == 1, "the desktop window never raises (got %u)\n", unit_raise_count());
 }
 
+/* --- the cursor (cursor.c) ---------------------------------------------------
+ *
+ * The decode runs against the pinned user32's own cursor objects (the mock
+ * forwards NtUserGetIconInfo / NtGdiGetDIBits to user32/gdi32), so every
+ * fact below is the oracle's: what LoadCursor(IDC_ARROW) is, where the
+ * I-beam's hotspot sits, how a CreateCursor mask decodes. The gui4 leg
+ * grades the same shapes on the scanout against the .cur files. */
+
+static unsigned int pack(unsigned int argb)
+{
+    return argb & 0xffffff; /* the mock scanout is BGRX: 0xRRGGBB is the pixel */
+}
+
+static unsigned int opaque_count(void)
+{
+    unsigned int x, y, n = 0;
+
+    for (y = 0; y < unit_cursor_height(); y++)
+        for (x = 0; x < unit_cursor_width(); x++)
+            if (unit_cursor_pixel(x, y) >> 24)
+                n++;
+    return n;
+}
+
+/* The stock arrow: the 32x32 frame LR_DEFAULTSIZE selects, hotspot at the
+ * tip, opaque there and transparent in the far corner; both black and
+ * white pixels present (an outline around a fill), every alpha binary. */
+static void test_cursor_arrow_decodes(void)
+{
+    HCURSOR arrow = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
+    unsigned int x, y, black = 0, white = 0, partial = 0;
+
+    unit_reset(SCREEN_W, SCREEN_H);
+    ok(arrow != NULL, "LoadCursorW(IDC_ARROW)\n");
+    unit_set_cursor(WIN_A, (ULONG_PTR)arrow);
+    ok(unit_cursor_publish_count() == 1, "published once (got %u)\n", unit_cursor_publish_count());
+    ok(unit_cursor_hwnd() == WIN_A, "published for the window named (got %x)\n",
+       unit_cursor_hwnd());
+    ok(unit_cursor_flags() == 0, "an ordinary publish, not the desktop default\n");
+    ok(unit_cursor_width() == 32 && unit_cursor_height() == 32, "32x32 frame (got %ux%u)\n",
+       unit_cursor_width(), unit_cursor_height());
+    ok(unit_cursor_hot_x() == 0 && unit_cursor_hot_y() == 0, "hotspot at the tip (got %d,%d)\n",
+       unit_cursor_hot_x(), unit_cursor_hot_y());
+    ok(unit_cursor_pixel(0, 0) >> 24 == 0xff, "the tip is opaque (got %08x)\n",
+       unit_cursor_pixel(0, 0));
+    ok((unit_cursor_pixel(0, 0) & 0xffffff) < 0x101010, "the tip is (near) black (got %08x)\n",
+       unit_cursor_pixel(0, 0));
+    ok(unit_cursor_pixel(31, 31) == 0, "the far corner is transparent (got %08x)\n",
+       unit_cursor_pixel(31, 31));
+    for (y = 0; y < 32; y++)
+        for (x = 0; x < 32; x++)
+        {
+            unsigned int p = unit_cursor_pixel(x, y);
+            unsigned int r = (p >> 16) & 0xff, g = (p >> 8) & 0xff, b = p & 0xff;
+            if ((p >> 24) == 0xff && r < 0x40 && g < 0x40 && b < 0x40)
+                black++;
+            else if ((p >> 24) == 0xff && r > 0xc0 && g > 0xc0 && b > 0xc0)
+                white++;
+            if ((p >> 24) != 0 && (p >> 24) != 0xff)
+                partial++;
+        }
+    ok(black > 40 && white > 30, "an outline around a fill (%u dark, %u light)\n", black, white);
+    ok(partial == 0, "alpha is binary (%u partial pixels)\n", partial);
+}
+
+static void test_cursor_ibeam_hotspot(void)
+{
+    HCURSOR ibeam = LoadCursorW(NULL, (LPCWSTR)IDC_IBEAM);
+
+    unit_reset(SCREEN_W, SCREEN_H);
+    ok(ibeam != NULL, "LoadCursorW(IDC_IBEAM)\n");
+    unit_set_cursor(WIN_B, (ULONG_PTR)ibeam);
+    ok(unit_cursor_width() == 32 && unit_cursor_height() == 32, "32x32 frame (got %ux%u)\n",
+       unit_cursor_width(), unit_cursor_height());
+    ok(unit_cursor_hot_x() == 3 && unit_cursor_hot_y() == 9, "the I-beam's hotspot (got %d,%d)\n",
+       unit_cursor_hot_x(), unit_cursor_hot_y());
+    ok(unit_cursor_pixel(3, 9) >> 24 == 0xff, "opaque at the hotspot (got %08x)\n",
+       unit_cursor_pixel(3, 9));
+}
+
+/* A monochrome CreateCursor: the four AND/XOR outcomes, one per column.
+ * 16 wide so each plane row is exactly one WORD (CreateCursor's row
+ * alignment), 2 high so the double-height mask is exercised. */
+static void test_cursor_mono_truth_table(void)
+{
+    /* columns 0..3: AND 1,0,0,1 / XOR 0,1,0,1 -> screen, white, black, invert */
+    static const unsigned char and_plane[4] = {0x90, 0xff, 0x90, 0xff};
+    static const unsigned char xor_plane[4] = {0x50, 0x00, 0x50, 0x00};
+    HCURSOR mono = CreateCursor(NULL, 1, 0, 16, 2, and_plane, xor_plane);
+
+    unit_reset(SCREEN_W, SCREEN_H);
+    ok(mono != NULL, "CreateCursor\n");
+    unit_set_cursor(WIN_A, (ULONG_PTR)mono);
+    ok(unit_cursor_width() == 16 && unit_cursor_height() == 2, "16x2 (got %ux%u)\n",
+       unit_cursor_width(), unit_cursor_height());
+    ok(unit_cursor_hot_x() == 1 && unit_cursor_hot_y() == 0, "hotspot kept (got %d,%d)\n",
+       unit_cursor_hot_x(), unit_cursor_hot_y());
+    ok(unit_cursor_pixel(0, 0) == 0, "AND 1 XOR 0: screen (got %08x)\n", unit_cursor_pixel(0, 0));
+    ok(unit_cursor_pixel(1, 0) == 0xffffffff, "AND 0 XOR 1: white (got %08x)\n",
+       unit_cursor_pixel(1, 0));
+    ok(unit_cursor_pixel(2, 0) == 0xff000000, "AND 0 XOR 0: black (got %08x)\n",
+       unit_cursor_pixel(2, 0));
+    ok(unit_cursor_pixel(3, 0) == 0xff000000, "AND 1 XOR 1: invert, drawn black (got %08x)\n",
+       unit_cursor_pixel(3, 0));
+    ok(unit_cursor_pixel(0, 1) == 0 && unit_cursor_pixel(1, 1) == 0xffffffff,
+       "the second row decodes the same (got %08x %08x)\n", unit_cursor_pixel(0, 1),
+       unit_cursor_pixel(1, 1));
+    DestroyCursor(mono);
+}
+
+/* A colour cursor with an alpha channel: the "more than 10% alpha" cut,
+ * straight from a 32bpp DIB section (alphas 0, 20, 30, 255). */
+static void test_cursor_color_alpha_cut(void)
+{
+    BITMAPINFO info;
+    ICONINFO ii;
+    HBITMAP color, mask;
+    unsigned int *bits = NULL;
+    HCURSOR cursor;
+
+    unit_reset(SCREEN_W, SCREEN_H);
+    memset(&info, 0, sizeof(info));
+    info.bmiHeader.biSize = sizeof(info.bmiHeader);
+    info.bmiHeader.biWidth = 4;
+    info.bmiHeader.biHeight = -1;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    color = CreateDIBSection(NULL, &info, DIB_RGB_COLORS, (void **)&bits, NULL, 0);
+    ok(color != NULL && bits != NULL, "CreateDIBSection\n");
+    if (!bits)
+        return;
+    bits[0] = 0x00102030;
+    bits[1] = 0x14405060;
+    bits[2] = 0x1e708090;
+    bits[3] = 0xffa0b0c0;
+    mask = CreateBitmap(4, 1, 1, 1, NULL);
+    memset(&ii, 0, sizeof(ii));
+    ii.fIcon = FALSE;
+    ii.xHotspot = 1;
+    ii.yHotspot = 0;
+    ii.hbmMask = mask;
+    ii.hbmColor = color;
+    cursor = CreateIconIndirect(&ii);
+    ok(cursor != NULL, "CreateIconIndirect\n");
+    unit_set_cursor(WIN_A, (ULONG_PTR)cursor);
+    ok(unit_cursor_width() == 4 && unit_cursor_height() == 1, "4x1 (got %ux%u)\n",
+       unit_cursor_width(), unit_cursor_height());
+    ok(unit_cursor_pixel(0, 0) == 0, "alpha 0: transparent (got %08x)\n", unit_cursor_pixel(0, 0));
+    ok(unit_cursor_pixel(1, 0) == 0, "alpha 20: below the cut (got %08x)\n",
+       unit_cursor_pixel(1, 0));
+    ok(unit_cursor_pixel(2, 0) == 0xff708090, "alpha 30: opaque, colour kept (got %08x)\n",
+       unit_cursor_pixel(2, 0));
+    ok(unit_cursor_pixel(3, 0) == 0xffa0b0c0, "alpha 255: opaque (got %08x)\n",
+       unit_cursor_pixel(3, 0));
+    DestroyCursor(cursor);
+    DeleteObject(color);
+    DeleteObject(mask);
+}
+
+/* handle 0 (hidden: ShowCursor below zero, a class without a cursor) is
+ * an empty image; a refused publish (the pointer left the window) repairs
+ * nothing and reports nothing. */
+static void test_cursor_hidden_and_refused(void)
+{
+    HCURSOR arrow = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
+
+    unit_reset(SCREEN_W, SCREEN_H);
+    unit_set_cursor(WIN_A, 0);
+    ok(unit_cursor_publish_count() == 1, "hidden is published (got %u)\n",
+       unit_cursor_publish_count());
+    ok(unit_cursor_width() == 0 && unit_cursor_height() == 0, "hidden is empty (got %ux%u)\n",
+       unit_cursor_width(), unit_cursor_height());
+    unit_set_pointer(200, 200);
+    unit_present();
+    ok(unit_pixel(200, 200) == 0, "an empty image draws nothing (got %08x)\n",
+       unit_pixel(200, 200));
+
+    unit_cursor_refuse(STATUS_INVALID_HANDLE);
+    unit_set_cursor(WIN_A, (ULONG_PTR)arrow);
+    ok(unit_cursor_publish_count() == 1, "a refused publish is not counted (got %u)\n",
+       unit_cursor_publish_count());
+    ok(unit_redraw_count() == 0, "a refused publish repairs nothing (got %u redraws)\n",
+       unit_redraw_count());
+}
+
+/* The overlay: nothing at the desktop's initial (0,0); the hotspot on the
+ * pointer; clipped at every edge; idempotent (the picture after two
+ * presents is the picture after one, the whole no-save-under argument). */
+static void test_cursor_present(void)
+{
+    HCURSOR ibeam = LoadCursorW(NULL, (LPCWSTR)IDC_IBEAM);
+    unsigned int x, y, drawn = 0, drawn_again = 0, expected;
+
+    unit_reset(SCREEN_W, SCREEN_H);
+    unit_set_cursor(WIN_A, (ULONG_PTR)ibeam);
+    /* the desktop background as the baseline: a black cursor pixel over the
+     * zeroed scanout would be invisible to the census (the fill's own
+     * present finds the pointer at (0,0) and draws nothing) */
+    unit_repaint_rect(0, 0, SCREEN_W, SCREEN_H, 0);
+    for (y = 0; y < SCREEN_H; y++)
+        for (x = 0; x < SCREEN_W; x++)
+            if (unit_pixel(x, y) != unit_bg())
+                drawn++;
+    ok(drawn == 0, "nothing drawn at the initial (0,0) (%u pixels)\n", drawn);
+
+    unit_set_pointer(100, 100);
+    unit_present();
+    expected = pack(unit_cursor_pixel(3, 9));
+    ok(unit_pixel(100, 100) == expected,
+       "the hotspot pixel lands on the pointer (got %08x, want %08x)\n", unit_pixel(100, 100),
+       expected);
+    for (y = 0; y < SCREEN_H; y++)
+        for (x = 0; x < SCREEN_W; x++)
+            if (unit_pixel(x, y) != unit_bg())
+                drawn++;
+    ok(drawn == opaque_count(), "every opaque pixel and nothing else (%u drawn, %u opaque)\n",
+       drawn, opaque_count());
+    unit_present();
+    for (y = 0; y < SCREEN_H; y++)
+        for (x = 0; x < SCREEN_W; x++)
+            if (unit_pixel(x, y) != unit_bg())
+                drawn_again++;
+    ok(drawn_again == drawn, "presenting twice changes nothing (%u vs %u)\n", drawn_again, drawn);
+
+    /* clipped top-left: the image origin is (-2,-8), the hotspot at (1,1) */
+    unit_reset(SCREEN_W, SCREEN_H);
+    unit_set_cursor(WIN_A, (ULONG_PTR)ibeam);
+    unit_set_pointer(1, 1);
+    unit_present();
+    ok(unit_pixel(1, 1) == expected,
+       "clipped at the top-left, hotspot still on the pointer (got %08x)\n", unit_pixel(1, 1));
+    /* clipped bottom-right: only the pixels on screen are written */
+    unit_set_pointer(SCREEN_W - 1, SCREEN_H - 1);
+    unit_present();
+    ok(unit_pixel(SCREEN_W - 1, SCREEN_H - 1) == expected,
+       "clipped at the bottom-right, hotspot still on the pointer (got %08x)\n",
+       unit_pixel(SCREEN_W - 1, SCREEN_H - 1));
+}
+
+/* A shape change is a move that stays put: the previous shape's footprint
+ * at the pointer is handed to the repaint authority (the window under it
+ * is invalidated there), and the new shape is drawn at once. */
+static void test_cursor_change_repairs(void)
+{
+    HCURSOR arrow = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
+    HCURSOR ibeam = LoadCursorW(NULL, (LPCWSTR)IDC_IBEAM);
+    int rect[4];
+
+    unit_reset(SCREEN_W, SCREEN_H);
+    unit_set_desktop(DESKTOP);
+    unit_add_window(WIN_A, 100, 100, 400, 400, 100, 100, 400, 400, 1);
+    unit_set_pointer(150, 150);
+    unit_set_cursor(WIN_A, (ULONG_PTR)arrow);
+    ok(unit_redraw_count() == 0, "the first shape has nothing to repair (got %u)\n",
+       unit_redraw_count());
+    ok(unit_pixel(150, 150) == pack(unit_cursor_pixel(0, 0)), "the arrow is drawn at once\n");
+
+    unit_set_cursor(WIN_A, (ULONG_PTR)ibeam);
+    ok(unit_redraw_count() == 1, "the arrow's footprint is repaired through the window (got %u)\n",
+       unit_redraw_count());
+    ok(unit_redraw_hwnd(0) == WIN_A, "the window under the footprint (got %x)\n",
+       unit_redraw_hwnd(0));
+    unit_redraw_rect(0, rect);
+    ok(!unit_redraw_whole(0) && rect[0] == 50 && rect[1] == 50 && rect[2] == 82 && rect[3] == 82,
+       "the arrow's 32x32 footprint, client-relative (got whole=%d %d,%d,%d,%d)\n",
+       unit_redraw_whole(0), rect[0], rect[1], rect[2], rect[3]);
+    ok(unit_pixel(150, 150) == pack(unit_cursor_pixel(3, 9)), "the I-beam is drawn at once\n");
+}
+
+/* The desktop default: IDC_ARROW published with the desktop flag and no
+ * window, for the pump to fall back to where nobody is asked. */
+static void test_cursor_desktop_default(void)
+{
+    unit_reset(SCREEN_W, SCREEN_H);
+    unit_publish_desktop_default();
+    ok(unit_cursor_publish_count() == 1, "published (got %u)\n", unit_cursor_publish_count());
+    ok(unit_cursor_flags() == 1 && unit_cursor_hwnd() == 0,
+       "the desktop flag, no window (got %x/%x)\n", unit_cursor_flags(), unit_cursor_hwnd());
+    ok(unit_cursor_width() == 32 && unit_cursor_hot_x() == 0 && unit_cursor_hot_y() == 0,
+       "the arrow (got %ux%u hot %d,%d)\n", unit_cursor_width(), unit_cursor_height(),
+       unit_cursor_hot_x(), unit_cursor_hot_y());
+}
+
 START_TEST(winefbunit)
 {
+    test_cursor_arrow_decodes();
+    test_cursor_ibeam_hotspot();
+    test_cursor_mono_truth_table();
+    test_cursor_color_alpha_cut();
+    test_cursor_hidden_and_refused();
+    test_cursor_present();
+    test_cursor_change_repairs();
+    test_cursor_desktop_default();
     test_flush_clips_above();
     test_desktop_flush_clips_below();
     test_hidden_flush_paints_nothing();

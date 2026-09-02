@@ -36,6 +36,24 @@ void unit_repaint_rect(int left, int top, int right, int bottom, unsigned int ex
 void unit_activate(unsigned int hwnd, unsigned int previous);
 void unit_set_button_down(int down); /* the click gate's async key state */
 
+/* the cursor (cursor.c): the pointer position the mock desktop publishes,
+ * the driver's pSetCursor entry with a real HCURSOR from the pinned user32
+ * (handle VALUE), the desktop-default publish, and the overlay. The mock
+ * "server" keeps the one published image; a case can make it refuse. */
+void unit_set_pointer(int x, int y);
+void unit_set_cursor(unsigned int hwnd, unsigned long long handle);
+void unit_publish_desktop_default(void);
+void unit_present(void);
+void unit_cursor_refuse(unsigned int status); /* 0 = accept (the default) */
+unsigned int unit_cursor_publish_count(void);
+unsigned int unit_cursor_hwnd(void);
+unsigned int unit_cursor_flags(void);
+unsigned int unit_cursor_width(void);
+unsigned int unit_cursor_height(void);
+int unit_cursor_hot_x(void);
+int unit_cursor_hot_y(void);
+unsigned int unit_cursor_pixel(unsigned int x, unsigned int y); /* 0xAARRGGBB */
+
 /* observation */
 unsigned int unit_pixel(int x, int y);
 unsigned int unit_bg(void);
