@@ -154,6 +154,7 @@ CSRC := kernel/init/main.c \
         arch/x86_64/rtc.c \
         arch/x86_64/smbios.c \
         arch/x86_64/acpi.c \
+        arch/x86_64/power.c \
         arch/x86_64/fwcfg.c \
         arch/x86_64/idt.c \
         arch/x86_64/lapic.c \

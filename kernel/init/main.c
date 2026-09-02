@@ -19,6 +19,7 @@
 #include "arch/x86_64/mmu.h"
 #include "arch/x86_64/smbios.h"
 #include "arch/x86_64/acpi.h"
+#include "arch/x86_64/power.h"
 #include "kernel/lib/dbgprint.h"
 #include "kernel/lib/rtl.h"
 #include "kernel/lib/string.h"
@@ -505,17 +506,13 @@ static void KiTestMainThread(void *context)
 
     /* The interactive boot (make run) skips the kernel test suites: the
      * serial console belongs to a human — the session manager runs
-     * firstboot and hands the console to cmd.exe, and the VM powers off
-     * when it exits (`exit` at the prompt). */
+     * firstboot and hands the console to cmd.exe, and the machine powers
+     * off when it exits (`exit` at the prompt) — through ACPI S5
+     * (arch/x86_64/power.c), the way a bare-metal session ends. */
     if (KiIsInteractiveBoot())
     {
         KiRunSessionManager(0);
-        KiQemuExit(0);
-        /* The debug-exit teardown is asynchronous; do not run past it. */
-        for (;;)
-        {
-            __asm__ volatile("hlt");
-        }
+        KiPowerOff();
     }
 
     /* Boot is quiescent: the first consistency sweep (kernel/init/verify.c)

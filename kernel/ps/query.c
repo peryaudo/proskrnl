@@ -26,6 +26,7 @@
 #include "arch/x86_64/io.h"
 #include "arch/x86_64/rtc.h"
 #include "arch/x86_64/smbios.h"
+#include "arch/x86_64/power.h"
 #include "arch/x86_64/cpu.h"
 
 #include "abi/ntkeapi.h"
@@ -3099,9 +3100,9 @@ NTSTATUS NtShutdownSystem(SHUTDOWN_ACTION action)
     /* Built against the MS contract (NtShutdownSystem + Privilege Constants,
      * learn.microsoft.com; the pinned oracle stubs the service) and pinned
      * beyond_oracle by sem_ps/shutdown; the live arms are the tests/run
-     * cui7 acceptance leg. Every mutation is already durable at syscall
-     * return (Art. 3 immediate writeback), so there is nothing to flush
-     * before stopping the machine. */
+     * cui7 (ring-3 poweroff) and acpi (QEMU exits 0 on its own) legs. Every
+     * mutation is already durable at syscall return (Art. 3 immediate
+     * writeback), so there is nothing to flush before stopping the machine. */
     LUID luid;
     luid.LowPart = SE_SHUTDOWN_PRIVILEGE;
     luid.HighPart = 0;
@@ -3123,12 +3124,13 @@ NTSTATUS NtShutdownSystem(SHUTDOWN_ACTION action)
     }
     else
     {
-        /* NoReboot and PowerOff both stop the VM through the existing
-         * clean-exit convention (arch/x86_64/io.h KiQemuExit). */
-        KiQemuExit(0);
+        /* NoReboot and PowerOff both power the machine off through ACPI S5
+         * (arch/x86_64/power.c; the debug-exit port only as its said
+         * fallback) — NoReboot powers off rather than parking at "safe to
+         * turn off", a VM having nobody to press the button (docs/03). */
+        KiPowerOff();
     }
-    /* The teardown is asynchronous (the KiQemuExit comment); park until it
-     * lands. */
+    /* The reset is asynchronous; park until it lands. */
     for (;;)
     {
         __asm__ volatile("hlt");
