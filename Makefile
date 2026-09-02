@@ -144,6 +144,7 @@ CSRC := kernel/init/main.c \
         drivers/condrv.c \
         drivers/fb.c \
         drivers/hid.c \
+        drivers/usb/xhci.c \
         drivers/snd.c \
         fs/fat32/fat.c \
         fs/fat32/dir.c \
