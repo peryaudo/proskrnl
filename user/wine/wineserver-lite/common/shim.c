@@ -69,6 +69,7 @@
 #include "prsk_request_table.h"
 #include "transport.h"
 #include "shim.h"
+#include "cursorshape.h"
 
 /* --- server globals --------------------------------------------------------
  *
@@ -851,6 +852,175 @@ static void probe_shell(void)
                                : "shell boot; the desktop belongs to explorer" );
 }
 
+/* --- the cursor image ------------------------------------------------------
+ *
+ * The one copy of the decoded cursor every scanout writer draws from
+ * (dlls/winefb.drv/cursorshape.h explains the arrangement). The server owns
+ * the section and is its only writer: a publish arrives over the transport
+ * as PRSK_OP_SET_CURSOR from the process that owns the HCURSOR (the only
+ * process that can read its pixels), is checked against the window the
+ * pointer is in NOW, and is copied in under the server lock behind the
+ * image's seqlock. Clients map the section read-only (call.c), so a client
+ * dying mid-write -- which would leave the seqlock odd for every other
+ * writer's flush -- cannot happen by construction.
+ *
+ * The desktop's own arrow is kept aside: the pinned server posts
+ * WM_WINE_SETCURSOR only to a thread that owns the window under the pointer
+ * (server/queue.c get_desktop_cursor_thread_input), and under the
+ * explorerless fixture the forced desktop window has none
+ * (detach_user_entry below), so nobody would ever be asked for the shape
+ * over bare desktop. The pump re-asserts the arrow there
+ * (prsk_cursor_reassert_default, from its motion step). On a shell boot
+ * explorer owns the desktop window and the ordinary path publishes. */
+
+static HANDLE cursor_section;
+static volatile struct prsk_cursor_image *cursor_shared;
+static struct prsk_cursor_image cursor_desktop_default;
+static int cursor_have_default, cursor_showing_default;
+
+/* The server's copy of the pinned get_window_thread: shim.c is built
+ * without the SRV_RENAMES (the comment above srv_destroy_thread_windows
+ * explains why), so the renamed symbol is named here. */
+extern struct thread *srv_get_window_thread( user_handle_t handle );
+
+static int prsk_create_cursor_section(void)
+{
+    static const WCHAR nameW[] = PRSK_SRV_CURSOR;
+    UNICODE_STRING name = RTL_CONSTANT_STRING( nameW );
+    OBJECT_ATTRIBUTES attr;
+    LARGE_INTEGER size;
+    SIZE_T view_size = 0;
+    void *view = NULL;
+    NTSTATUS status;
+
+    InitializeObjectAttributes( &attr, &name, OBJ_CASE_INSENSITIVE, NULL, NULL );
+    size.QuadPart = sizeof(struct prsk_cursor_image);
+    if ((status = NtCreateSection( &cursor_section, SECTION_ALL_ACCESS, &attr, &size,
+                                   PAGE_READWRITE, SEC_COMMIT, NULL )))
+    {
+        prsk_log( "[PANIC] wineserver-lite: cursor section -> %08x\n", (unsigned)status );
+        return 0;
+    }
+    if ((status = NtMapViewOfSection( cursor_section, GetCurrentProcess(), &view, 0, 0, NULL,
+                                      &view_size, ViewShare, 0, PAGE_READWRITE )))
+    {
+        prsk_log( "[PANIC] wineserver-lite: cursor map -> %08x\n", (unsigned)status );
+        return 0;
+    }
+    /* The handle is HELD for the life of the process, as the session
+     * section's is: a name keeps no NT section alive. */
+    memset( view, 0, sizeof(struct prsk_cursor_image) );
+    cursor_shared = view;
+    return 1;
+}
+
+const volatile struct prsk_cursor_image *prsk_cursor_shared(void)
+{
+    return cursor_shared;
+}
+
+/* Under the server lock: the seqlock write, odd while the fields move. */
+static void cursor_write( const struct prsk_cursor_image *src )
+{
+    volatile struct prsk_cursor_image *dst = cursor_shared;
+    unsigned int i, count = src->width * src->height;
+
+    __atomic_fetch_add( &dst->seq, 1, __ATOMIC_ACQ_REL );
+    dst->width = src->width;
+    dst->height = src->height;
+    dst->hot_x = src->hot_x;
+    dst->hot_y = src->hot_y;
+    for (i = 0; i < count; i++) dst->pixels[i] = src->pixels[i];
+    dst->generation++;
+    __atomic_fetch_add( &dst->seq, 1, __ATOMIC_ACQ_REL );
+}
+
+unsigned int prsk_cursor_publish( const void *data, unsigned int size )
+{
+    const struct prsk_cursor_publish *publish = data;
+    struct winstation *winstation;
+    struct desktop *desktop;
+    unsigned int status = STATUS_SUCCESS;
+
+    if (size != sizeof(*publish) || publish->image.width > PRSK_CURSOR_MAX ||
+        publish->image.height > PRSK_CURSOR_MAX ||
+        !publish->image.width != !publish->image.height)
+    {
+        /* Malformed, not stale: named, never quietly dropped (Art. 12). */
+        prsk_log( "[KTEST] wineserver-lite: cursor publish refused (size=%u, %ux%u)\n", size,
+                  size >= sizeof(*publish) ? publish->image.width : 0,
+                  size >= sizeof(*publish) ? publish->image.height : 0 );
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (!cursor_shared) return STATUS_UNSUCCESSFUL;
+
+    server_lock();
+    if (publish->flags & PRSK_CURSOR_PUBLISH_DESKTOP)
+    {
+        cursor_desktop_default = publish->image;
+        cursor_have_default = 1;
+        /* Stands in only while nothing better has been published. */
+        if (!cursor_shared->generation || cursor_showing_default)
+        {
+            cursor_write( &cursor_desktop_default );
+            cursor_showing_default = 1;
+        }
+    }
+    else
+    {
+        /* The window this shape was decoded for must still be the one under
+         * the pointer: WM_WINE_SETCURSOR is delivered asynchronously, and a
+         * slow process answering for a window the pointer has since left
+         * would overwrite the shape the current window's owner published.
+         * The pinned server's own record of "which window" is
+         * desktop->cursor_win (server/queue.c update_desktop_cursor_window). */
+        if (publish->hwnd && (winstation = get_visible_winstation()) &&
+            (desktop = get_input_desktop( winstation )))
+        {
+            if (desktop->cursor_win != publish->hwnd) status = STATUS_INVALID_HANDLE;
+            release_object( desktop );
+        }
+        if (!status)
+        {
+            cursor_write( &publish->image );
+            cursor_showing_default = 0;
+        }
+    }
+    server_unlock();
+    return status;
+}
+
+int prsk_cursor_reassert_default(void)
+{
+    struct winstation *winstation;
+    struct desktop *desktop;
+    struct thread *thread;
+    int changed = 0;
+
+    if (!cursor_shared) return 0;
+    server_lock();
+    if (cursor_have_default && !cursor_showing_default &&
+        (winstation = get_visible_winstation()) && (desktop = get_input_desktop( winstation )))
+    {
+        /* The pinned server's own test for "is anyone asked" (server/queue.c
+         * get_desktop_cursor_thread_input): a window with no thread, or a
+         * thread with no queue, gets no WM_WINE_SETCURSOR. */
+        thread = desktop->cursor_win ? srv_get_window_thread( desktop->cursor_win ) : NULL;
+        if (!thread || !thread->queue)
+        {
+            cursor_write( &cursor_desktop_default );
+            cursor_showing_default = 1;
+            changed = 1;
+        }
+        /* get_window_thread hands back a grabbed reference (server/window.c),
+         * released by its pinned caller too. */
+        if (thread) release_object( thread );
+        release_object( desktop );
+    }
+    server_unlock();
+    return changed;
+}
+
 static int server_bringup(void)
 {
     LARGE_INTEGER now;
@@ -869,6 +1039,9 @@ static int server_bringup(void)
     if (NtCreateEvent( &timeout_wakeup, EVENT_ALL_ACCESS, &attr, SynchronizationEvent, FALSE ))
         return 0;
     if (!prsk_create_session_mapping()) return 0;
+    /* Before the pump (its first motion reads it) and before the transport
+     * (every client opens it at attach). */
+    if (!prsk_create_cursor_section()) return 0;
 
     /* The process running this library is the first client -- the server's
      * own record, minted before any transport client exists so the list is

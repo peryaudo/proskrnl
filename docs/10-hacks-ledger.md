@@ -70,7 +70,9 @@ Scope:      drivers/hid.c ; drivers/hid.h ; drivers/hidproto.h ;
             drivers/virtio/input.c ; drivers/virtio/input.h ;
             kernel/io/file.c + kernel/init/main.c (the two init calls) ;
             user/wine/wineserver-lite/server/rawinput.c (the reader) ;
-            user/wine/dlls/winefb.drv/cursor.c (GUI-4: the drawn arrow)
+            user/wine/dlls/winefb.drv/cursor.c (GUI-4: the drawn cursor --
+            since the HCURSOR change the window's real shape, decoded in the
+            owning process and published through HACK-003's server)
 Retirement: if input routing moves into a kernel win32k (route (b)).
 ```
 
@@ -110,7 +112,10 @@ Scope:      user/wine/wineserver-lite/server/main.c (the process), user/wine/win
             pinned send_hardware_message handler a client's request reaches;
             docs/03 "GUI-4 notes"), user/wine/wineserver-lite/
             {transport.h,call.c,srv_glue.c,shim.c} (the wire and the state
-            machine's environment), the WINESERVER_LITE link in the Makefile,
+            machine's environment; the wire carries one op that is not a Wine
+            request, the cursor-image publish, and the server owns the
+            section every writer draws the cursor from -- shim.c
+            prsk_cursor_publish), the WINESERVER_LITE link in the Makefile,
             and SmssStartWineServer in user/smss/launch.c, which starts it.
             The exe is a NEW LINK over the same objects win32u.dll uses, never
             a stripped copy of server/ (docs/06). The transport itself is not

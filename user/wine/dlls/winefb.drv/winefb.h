@@ -54,8 +54,14 @@ extern void winefb_activate_window( HWND hwnd, HWND previous );
  * every scanout writer owes back (the cursor is above everything). The
  * MOVER is wineserver-lite's raw-input pump (server/rawinput.c), not this
  * process: clients never open the input devices (docs/03 GUI-4 notes),
- * they only read the position the server publishes and draw. */
+ * they only read the position and the shape the server publishes and
+ * draw. The shape is the window's HCURSOR: winefb_set_cursor (pSetCursor)
+ * decodes it in the owning process and publishes it; the desktop's own
+ * arrow is published once, when the desktop window is sized (display.c),
+ * for the pump to fall back to over a window no thread answers for. */
 extern void winefb_cursor_present(void);
+extern void winefb_set_cursor( HWND hwnd, HCURSOR handle );
+extern void winefb_cursor_publish_desktop_default(void);
 
 /* compose.c: the z-order queries behind the compositing flush and the
  * uncover repair (blit.c). More top-level windows than this and the excess
@@ -78,7 +84,8 @@ extern UINT winefb_other_toplevels( HWND exclude, struct winefb_toplevel *out, U
  * WndProc, so winefb is its painter, the same authority split as an X root
  * window. With explorer (GUI-6) its PaintDesktop erases in the same color,
  * so the two painters agree by construction. The value itself and the
- * arrow shape live in cursorshape.h, shared with wineserver-lite's pump. */
+ * cursor image contract live in cursorshape.h, shared with
+ * wineserver-lite's pump. */
 #include "cursorshape.h"
 extern void winefb_fill_rect( const RECT *screen_rect, COLORREF color );
 extern UINT winefb_pack_pixel( UINT r, UINT g, UINT b );

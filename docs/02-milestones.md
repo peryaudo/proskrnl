@@ -759,10 +759,12 @@ window has no other painter. Hit-testing, routing, capture and the drag loop are
 pinned server's and win32u's own, unmodified; the hack meter is unchanged. The flush
 clock survives as flush-on-message-wait by measurement, not assumption: with input
 flowing, message waits are continuous, and win32u's dirty-bounds tracking plus the
-clipped blits complete the dirty-rectangle story. What is deliberately *not* built:
-per-window `HCURSOR` shapes (the cursor is one software arrow with a single writer —
-the escalation path is named in docs/03), `HWND_BOTTOM` lowering exposure, and
-`pMoveWindowBits` (the forced full re-blit covers pure moves). Residuals and the
+clipped blits complete the dirty-rectangle story. What was deliberately *not* built
+at the time: per-window `HCURSOR` shapes (the cursor was one software arrow with a single
+writer; since built — the window's real cursor, decoded in the owning process and
+published through the server for every writer, docs/03 "GUI-4 notes"), `HWND_BOTTOM`
+lowering exposure (since retired, docs/03), and `pMoveWindowBits` (the forced full re-blit
+covers pure moves). Residuals and the
 focus-stealing lesson the leg surfaced: docs/03 "GUI-4 notes".
 
 ## GUI-5 — GUI finishing
