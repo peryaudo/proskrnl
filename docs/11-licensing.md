@@ -14,6 +14,7 @@ root `LICENSE`.
 | ReactOS shell (optional GUI-7), its INF data | ReactOS | **GPL-2.0** |
 | `third_party/flanterm` (the boot console's glyph renderer) | Flanterm | **BSD-2-Clause** |
 | `third_party/lwip` (the TCP/IP protocol engine) | lwIP | **BSD-3-Clause** |
+| `third_party/keycodemapdb` (the key-code database `drivers/usb/usbkeymap.h` is generated from) | keycodemapdb (QEMU project) | **BSD-3-Clause** (dual with GPL-2.0-or-later; the BSD grant is the one used) |
 
 ## Third-party code inside the kernel image
 

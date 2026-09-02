@@ -2560,6 +2560,7 @@ gen-check: wtest-manifest-check
 	python3 tools/gen_syscalls.py --check
 	python3 tools/gen_upcase.py --check
 	python3 tools/gen_timezones.py --check
+	python3 tools/gen_usb_keymap.py --check
 
 # Enforce the docs/15 house style — the one style gate, `make format`.
 #

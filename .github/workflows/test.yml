@@ -77,12 +77,13 @@ jobs:
       # submodule. All are https in .gitmodules (only third_party/wine
       # needs the ssh rewrite), and none is built here.
       - name: Fetch the header-only submodules
-        run: git submodule update --init --depth 1 third_party/limine-protocol third_party/flanterm third_party/lwip
+        run: git submodule update --init --depth 1 third_party/limine-protocol third_party/flanterm third_party/lwip third_party/keycodemapdb
 
       # `make gen-check` reads TRACKED files of the pinned Wine tree —
       # include/*.h, dlls/ntdll/ntsyscalls.h, nls/l_intl.nls,
       # dlls/kernelbase/kernelbase.rgs — and builds none of it, so a shallow
-      # checkout is the whole cost. (loader/wine.inf is a configure product,
+      # checkout is the whole cost. (The USB keymap generator reads the
+      # keycodemapdb submodule, fetched with the header-only set above.) (loader/wine.inf is a configure product,
       # which is why gen_license is not in that target; see the Makefile.)
       # .gitmodules pins the tree by SSH URL and the runner has no key, hence
       # the same HTTPS rewrite the third-party composite action uses.
