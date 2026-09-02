@@ -51,6 +51,21 @@ extern unsigned int prsk_internal_dispatch( struct __server_request_info *info )
 extern unsigned int prsk_internal_input_desktop(void);
 extern void prsk_internal_close( unsigned int handle );
 
+/* The published cursor image (dlls/winefb.drv/cursorshape.h): the server
+ * owns the section (created at bring-up, before the pump and the transport)
+ * and is its only writer. prsk_cursor_publish is PRSK_OP_SET_CURSOR's
+ * server half -- `data` is the slot payload, one struct prsk_cursor_publish;
+ * it refuses a publish for a window the pointer has since left
+ * (STATUS_INVALID_HANDLE, the expected race) and a malformed one loudly.
+ * prsk_cursor_shared is the pump's read side. prsk_cursor_reassert_default
+ * puts the desktop's arrow back when the window under the pointer has no
+ * thread to answer WM_WINE_SETCURSOR (the explorerless fixture's forced
+ * desktop); returns nonzero when it changed the image. */
+struct prsk_cursor_image;
+extern const volatile struct prsk_cursor_image *prsk_cursor_shared(void);
+extern unsigned int prsk_cursor_publish( const void *data, unsigned int size );
+extern int prsk_cursor_reassert_default(void);
+
 /* Start the pump's reader threads (server/rawinput.c). Called once from
  * the server's own start-up, BEFORE the transport is published: the
  * session's input devices are claimed before any client can exist, the

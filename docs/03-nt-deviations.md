@@ -4880,7 +4880,7 @@ orphan is unreachable, not retried around. Injection is the same engine a client
 `prsk_internal_dispatch` (shim.c) under the server lock, with hardware origin, for which the
 whole pinned path is `current`-independent; what win32u does client-side before that request
 (kbdus scancode→vkey resolution, abs→pixel scaling) the pump mirrors, tables cited. The pump
-is also the cursor's mover: one more scanout writer that draws the shared arrow
+is also the cursor's mover: one more scanout writer that draws the shared cursor image
 (`cursorshape.h`) and repairs the vacated rect — overlapped top-levels through
 `redraw_window`, the desktop remainder filled directly. The per-process readers are
 **deleted, not demoted**: a GUI client never opens `\Device\Input0/1` at all — the devices
@@ -4939,9 +4939,61 @@ show there). The cost of the position test is that a pointer parked at exactly `
 arrow until it moves again — bounded, cosmetic, self-correcting, and it fails to *no*
 cursor rather than to a cursor where the pointer has never been.
 
-The SHAPE is still not the per-window `HCURSOR`: `WM_WINE_SETCURSOR` is delivered to the
-process owning the window under the cursor, and honoring shapes would mean tracking that
-cross-process for zero milestone value.
+**The SHAPE is the window's `HCURSOR`, and it travels the way the position does: one copy
+every writer reads.** `WM_WINE_SETCURSOR` is delivered to the process owning the window under
+the cursor (`dlls/win32u/cursoricon.c process_wine_setcursor` → `pSetCursor`), and that process
+is the *only* one that can turn the handle into pixels — win32u keeps cursor bitmaps per
+process (`dlls/win32u/window.c get_user_handle_ptr` answers `OBJ_OTHER_PROCESS` for anyone
+else), which is why winex11 and winewayland decode in-process too. So `pSetCursor`
+(`cursor.c winefb_set_cursor`) decodes there, on the message pump where the user lock is free
+to take — `NtUserGetIconInfo` for the frame, the pinned drivers' own recipes for the bits
+(winewayland's AND/XOR truth table for a monochrome cursor, winex11's 32bpp DIB plus
+"more than 10% alpha" cut for a colour one; `cursorshape.h` names both) — and publishes the
+image to wineserver-lite over the transport's one non-Wine op (`PRSK_OP_SET_CURSOR`). The
+server is the single writer of a section every GUI process maps *read-only*
+(`__prsk_srv_cursor`, `shim.c prsk_cursor_publish`, behind a seqlock spelled like the pinned
+server's own), so the reader inside a flush takes no lock, exactly as the position read; a
+client dying mid-write, which would leave the seqlock odd for every other writer's flush,
+cannot happen by construction. The pixels are Wine's stock cursors
+(`dlls/user32/resources/ocr_*.cur`, in the image's user32.dll) through the unmodified
+`LoadCursor`/`handle_set_cursor` path: the arrow, the I-beam over an edit, the sizing arrows
+on a border — and any app-supplied cursor up to 64×64, the largest stock frame; a bigger one
+is refused by name (Art. 12). The gui4 leg grades the footprint against the asset file itself,
+decoded host-side the way user32 selects and decodes it (`check_gui4.py`), over the desktop
+(the arrow) and inside B (B's I-beam, the per-window change end to end).
+
+Three consequences, each named because it is a rule rather than an accident:
+
+- **The image is opaque-or-transparent, never blended.** Every writer re-presents the cursor
+  over pixels it did not necessarily repaint, so a translucent edge would darken again on
+  every present; the cut is the pinned winex11's own (`create_xlib_color_cursor`, alpha > 25),
+  so the shape is the one Wine shows on an X server without Xcursor.
+- **A publish names its window and is refused if the pointer has since left it**
+  (`STATUS_INVALID_HANDLE`, checked against the pinned server's own `desktop->cursor_win`
+  under the server lock). `WM_WINE_SETCURSOR` is asynchronous; without the check a slow
+  process answering for a window the pointer crossed a moment ago would overwrite the shape
+  the current window's owner published, and nothing re-posts while the pointer stays put. X11
+  never has the race because the cursor there is per X window.
+- **The desktop's arrow has a publisher even where nobody is asked.** The pinned server posts
+  `WM_WINE_SETCURSOR` only to a thread owning the window under the pointer
+  (`server/queue.c get_desktop_cursor_thread_input`), and under the explorerless fixture the
+  forced desktop window has none — so over bare desktop no process would ever be asked. The
+  process that sizes the desktop window publishes `IDC_ARROW` as the desktop default
+  (`display.c` → `cursor.c winefb_cursor_publish_desktop_default`, win32u's own `LoadImageW`,
+  the call `register_builtin_classes` makes in the same context), and the pump puts it back
+  whenever the window under the pointer has no queue-owning thread
+  (`shim.c prsk_cursor_reassert_default`, the pinned condition mirrored). On a shell boot
+  explorer owns the desktop window and the ordinary path publishes.
+
+A shape change is a move that stays put: the publisher repairs the *previous* shape's
+footprint at the current position through the same repaint authority the mover uses
+(`blit.c winefb_repaint_rect`) and draws the new one at once; the pump's next step vacates
+its last footprint widened to the current shape's, so neither writer's picture outlives the
+other's. Residuals, named: an animated cursor shows its first frame (no stock cursor in the
+pinned tree is animated); a handle a process cannot read — another process's, reachable under
+attached inputs — leaves the shape unchanged with a trace line, as winex11's `create_cursor`
+returning 0 does; the hidden cursor (`ShowCursor` below zero, or a class with no cursor) is an
+empty image, which is what Wine shows too.
 
 The ordinary `set_caret_info` refusal is no longer reported as a failed request: `NtUserBeginPaint`
 hides and `NtUserEndPaint` shows the caret of every window they paint (`dlls/win32u/dce.c`), and

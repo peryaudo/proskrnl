@@ -320,6 +320,13 @@ static void serve_ready_slots(void)
             slot->status = STATUS_SUCCESS;
             slot->reply_size = 0;
             break;
+        case PRSK_OP_SET_CURSOR:
+            /* Not a Wine request: the payload is a decoded cursor image
+             * and the server's job is to copy it into the one place every
+             * writer reads (shim.c prsk_cursor_publish). */
+            slot->status = prsk_cursor_publish( slot->data, slot->data_size );
+            slot->reply_size = 0;
+            break;
         case PRSK_OP_CALL:
         default:
             memset( &info, 0, sizeof(info) );

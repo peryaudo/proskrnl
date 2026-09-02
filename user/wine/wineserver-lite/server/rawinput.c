@@ -29,14 +29,16 @@
  *
  * The pump is also the cursor's MOVER (cursorshape.h): the server maps
  * the scanout like any other writer and, after each batch, repaints the
- * rect the arrow vacated -- every overlapped top-level is invalidated
+ * rect the cursor vacated -- every overlapped top-level is invalidated
  * through redraw_window so its owner repaints (the same rect-scoped
  * invalidation winefb's repaint authority issues, blit.c), the uncovered
  * remainder is filled with the desktop background directly -- and draws
- * the arrow at the position the reply reports back (post-clip: the
- * server's answer, not the injected value, is where the cursor IS).
- * Every winefb process still composites the arrow over its own flushes
- * from the shared position, unchanged.
+ * the cursor at the position the reply reports back (post-clip: the
+ * server's answer, not the injected value, is where the cursor IS). The
+ * SHAPE is the image the server publishes (shim.c prsk_cursor_publish):
+ * the window's HCURSOR, decoded by the process that owns it. Every winefb
+ * process still composites the same image over its own flushes from the
+ * shared position, unchanged.
  */
 
 #include <stdarg.h>
@@ -236,34 +238,27 @@ static void fill_rect( const RECT *screen_rect, COLORREF color )
     }
 }
 
-/* Draw the arrow at the server-reported position -- cursor.c's own draw,
- * against the pump's mapping. */
-static void draw_arrow( int px, int py )
+/* Draw the published image at the server-reported position -- cursor.c's
+ * own draw, against the pump's mapping (cursorshape.h holds the one blit).
+ * `footprint` is the unclipped rect it covered, empty when nothing was
+ * drawn. */
+static void draw_cursor( const struct prsk_cursor_image *image, int px, int py, RECT *footprint )
 {
-    UINT black, white;
-    int row, col, width, height;
+    footprint->left = footprint->top = footprint->right = footprint->bottom = 0;
+    if (!scanout.pixels || !image->width) return;
+    prsk_cursor_blit( image, px, py, scanout.pixels, scanout.mode.pitch, scanout.mode.width,
+                      scanout.mode.height, pack_pixel );
+    prsk_cursor_rect( image, px, py, footprint );
+}
 
-    if (!scanout.pixels) return;
-    if (px < 0 || py < 0) return;
-
-    width = min( CURSOR_W, (int)scanout.mode.width - px );
-    height = min( CURSOR_H, (int)scanout.mode.height - py );
-    if (width <= 0 || height <= 0) return;
-
-    black = pack_pixel( 0x00, 0x00, 0x00 );
-    white = pack_pixel( 0xff, 0xff, 0xff );
-    for (row = 0; row < height; row++)
-    {
-        UINT *out = scanout_at( px, py + row );
-
-        for (col = 0; col < width; col++)
-        {
-            char pixel = cursor_image[row][col];
-
-            if (pixel == 'X') out[col] = black;
-            else if (pixel == '.') out[col] = white;
-        }
-    }
+static void rect_union( RECT *dst, const RECT *a, const RECT *b )
+{
+    if (a->right <= a->left || a->bottom <= a->top) { *dst = *b; return; }
+    if (b->right <= b->left || b->bottom <= b->top) { *dst = *a; return; }
+    dst->left = min( a->left, b->left );
+    dst->top = min( a->top, b->top );
+    dst->right = max( a->right, b->right );
+    dst->bottom = max( a->bottom, b->bottom );
 }
 
 /* --- requests through the internal dispatch --------------------------------- */
@@ -478,28 +473,49 @@ static void repaint_vacated( const RECT *vacated )
     for (f = 0; f < nfrag; f++) fill_rect( &fragments[f], WINEFB_DESKTOP_BG );
 }
 
-/* The mover's whole step, after a batch injected: repaint what the arrow
+/* The mover's whole step, after a batch injected: repaint what the cursor
  * left, draw it where the server says it now is, against the pump's own
- * mapping. Single writer for `drawn`: only the pointer thread calls this. */
+ * mapping. Single writer for `drawn`: only the pointer thread calls this.
+ *
+ * The shape is whatever the server publishes (shim.c prsk_cursor_publish;
+ * cursorshape.h). A shape change is a move that stays put: the publisher
+ * repaired its own footprint and drew the new shape where the pointer was,
+ * so the rect this step vacates is the last draw's footprint widened to
+ * what the CURRENT shape covers at the old position. Over a window no
+ * thread answers for, the desktop's arrow is put back first
+ * (prsk_cursor_reassert_default). */
 static void cursor_moved( int new_x, int new_y )
 {
-    static struct { int x, y; BOOL valid; } drawn;
-    RECT vacated;
+    static struct { int x, y; RECT rect; LONG generation; BOOL valid; } drawn;
+    struct prsk_cursor_image image;
+    RECT vacated, now;
 
     if (!scanout.pixels && !map_scanout()) return;
 
-    if (drawn.valid && (drawn.x != new_x || drawn.y != new_y))
+    prsk_cursor_reassert_default();
+    if (!prsk_cursor_read( prsk_cursor_shared(), &image ))
     {
-        vacated.left = drawn.x;
-        vacated.top = drawn.y;
-        vacated.right = drawn.x + CURSOR_W;
-        vacated.bottom = drawn.y + CURSOR_H;
-        repaint_vacated( &vacated );
+        /* The reader's spin bound fired: a write never finished. Named once
+         * (Art. 12); the step goes on with nothing to draw. */
+        static BOOL said;
+
+        if (!said) prsk_log( "[KTEST] gui4 cursor read STALLED (a write never finished)\n" );
+        said = TRUE;
+        image.width = image.height = 0;
+    }
+
+    if (drawn.valid && (drawn.x != new_x || drawn.y != new_y || drawn.generation != image.generation))
+    {
+        now.left = now.top = now.right = now.bottom = 0;
+        if (image.width) prsk_cursor_rect( &image, drawn.x, drawn.y, &now );
+        rect_union( &vacated, &drawn.rect, &now );
+        if (vacated.right > vacated.left && vacated.bottom > vacated.top) repaint_vacated( &vacated );
     }
     drawn.x = new_x;
     drawn.y = new_y;
+    drawn.generation = image.generation;
     drawn.valid = TRUE;
-    draw_arrow( new_x, new_y );
+    draw_cursor( &image, new_x, new_y, &drawn.rect );
 }
 
 /* --- the keyboard reader ---------------------------------------------------- */

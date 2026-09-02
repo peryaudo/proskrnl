@@ -181,6 +181,13 @@ void winefb_set_desktop_window( HWND hwnd )
                        GetRValue( WINEFB_DESKTOP_BG ), GetGValue( WINEFB_DESKTOP_BG ),
                        GetBValue( WINEFB_DESKTOP_BG ) );
 
+        /* The same authority split for the cursor over bare desktop: the
+         * process that sizes the desktop window publishes the arrow the
+         * pump shows there when no thread owns the window under the pointer
+         * (cursor.c). With explorer this is explorer's IDC_ARROW, which its
+         * own WM_SETCURSOR would publish anyway. */
+        winefb_cursor_publish_desktop_default();
+
         /* The scanout shows exactly one desktop, so the desktop being shown
          * is where input must go. An X server keeps that truth implicit
          * (focus events name the mapped root); this driver states it: the

@@ -60,6 +60,7 @@
 
 #include "prsk_request_table.h"
 #include "transport.h"
+#include "cursorshape.h"
 
 /* glue.c keeps the per-thread block in TEB->Win32ThreadInfo; the claimed
  * slot rides there so a call costs no lookup. 0 means unclaimed, so the
@@ -71,6 +72,11 @@ extern unsigned int *prsk_thread_slot(void);
 static LONG connected;
 static struct prsk_ring *ring;
 static HANDLE ring_section, doorbell, done_events[PRSK_SLOT_COUNT];
+/* The published cursor image: the server's section, mapped read-only here
+ * (transport.h PRSK_SRV_CURSOR). Read lock-free by every scanout writer
+ * (cursorshape.h prsk_cursor_read), written only through PRSK_OP_SET_CURSOR. */
+static HANDLE cursor_section;
+static const volatile struct prsk_cursor_image *cursor_image;
 
 static void init_unicode( UNICODE_STRING *str, const WCHAR *name )
 {
@@ -131,7 +137,29 @@ static int open_transport(void)
     init_unicode( &name, PRSK_SRV_DOORBELL );
     InitializeObjectAttributes( &attr, &name, OBJ_CASE_INSENSITIVE, NULL, NULL );
     if (NtOpenEvent( &doorbell, EVENT_MODIFY_STATE, &attr )) return 0;
+
+    /* The cursor image, read-only: this process never writes it, and a
+     * process that dies mid-write would leave the seqlock odd for every
+     * other writer's flush. It is created before the ring (shim.c
+     * server_bringup), so its absence is a bring-up defect, not a race. */
+    init_unicode( &name, PRSK_SRV_CURSOR );
+    InitializeObjectAttributes( &attr, &name, OBJ_CASE_INSENSITIVE, NULL, NULL );
+    if (NtOpenSection( &cursor_section, SECTION_MAP_READ, &attr )) return 0;
+    base = NULL;
+    size = 0;
+    if (NtMapViewOfSection( cursor_section, GetCurrentProcess(), &base, 0, 0, &offset, &size, 1,
+                            0, PAGE_READONLY ))
+        return 0;
+    cursor_image = base;
     return 1;
+}
+
+/* The published cursor image, for the scanout writers (cursor.c); NULL on
+ * a boot with no server. Never written through: the view is read-only. */
+const volatile struct prsk_cursor_image *prsk_client_cursor_image(void)
+{
+    if (!connected) return NULL;
+    return cursor_image;
 }
 
 static HANDLE done_event( unsigned int index )
@@ -322,6 +350,27 @@ unsigned int CDECL wine_server_call( void *req_ptr )
 
     if (!(index = claim_slot())) return STATUS_INSUFFICIENT_RESOURCES;
     return slot_call( index - 1, PRSK_OP_CALL, info );
+}
+
+/* Hand the server a decoded cursor image (cursor.c winefb_set_cursor):
+ * the one slot op that is not a Wine request. The payload rides the slot
+ * data like request varargs; the server answers STATUS_INVALID_HANDLE for
+ * a window the pointer has since left (shim.c prsk_cursor_publish), which
+ * the caller treats as the ordinary race it is. */
+unsigned int prsk_client_publish_cursor( const struct prsk_cursor_publish *publish )
+{
+    struct __server_request_info info;
+    unsigned int index;
+
+    if (!ensure_connected()) return STATUS_UNSUCCESSFUL;
+    if (!(index = claim_slot())) return STATUS_INSUFFICIENT_RESOURCES;
+
+    memset( &info, 0, sizeof(info) );
+    info.u.req.request_header.request_size = sizeof(*publish);
+    info.data_count = 1;
+    info.data[0].ptr = publish;
+    info.data[0].size = sizeof(*publish);
+    return slot_call( index - 1, PRSK_OP_SET_CURSOR, &info );
 }
 
 /* A thread is going away while its process lives on: hand the slot back and

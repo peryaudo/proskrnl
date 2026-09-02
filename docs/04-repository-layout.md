@@ -131,9 +131,12 @@ proskrnl/
 │       │   └── winefb.drv/          # ★ display backend written AS a Wine driver
 │       │       ├── init.c           #   user_driver_funcs table
 │       │       ├── display.c        #   mode enumeration, \Device\Fb0 map, desktop create
-│       │       ├── blit.c           #   dibdrv output → scanout
-│       │       ├── cursor.c         #   empty until there is a mouse (GUI-4)
-│       │       └── input.c          #   \Device\Input0 → input injection
+│       │       ├── blit.c           #   dibdrv output → scanout, the repaint authority
+│       │       ├── compose.c        #   the z-order queries behind clip-at-flush (GUI-4)
+│       │       ├── cursor.c         #   the software cursor: the window's HCURSOR,
+│       │       │                    #   decoded in the owning process (pSetCursor),
+│       │       │                    #   overlaid by every writer
+│       │       └── cursorshape.h    #   the cursor image contract, shared with the pump
 │       ├── programs/                # per-exe standalone-PE glue (CRT entry + the imports
 │       │   │                        #   this build does not bake) around the pinned tree's
 │       │   │                        #   OWN program objects — no program source is copied

@@ -45,6 +45,11 @@
 #define PRSK_SRV_READY    L"\\BaseNamedObjects\\__prsk_srv_ready"
 /* Per-slot completion events: __prsk_srv_done_<index>, decimal, no padding. */
 #define PRSK_SRV_DONE_FMT L"\\BaseNamedObjects\\__prsk_srv_done_%u"
+/* The published cursor image (one struct prsk_cursor_image,
+ * dlls/winefb.drv/cursorshape.h): written by the server alone, mapped
+ * read-only by every client, so the single-writer rule is the MMU's and
+ * not a convention. */
+#define PRSK_SRV_CURSOR   L"\\BaseNamedObjects\\__prsk_srv_cursor"
 
 /* The server image. Every image carrying win32u.dll carries it, so nothing
  * probes for it to decide how to talk to the server -- there is one way.
@@ -91,7 +96,14 @@ enum prsk_slot_op
 {
     PRSK_OP_CALL = 0, /* an ordinary wine_server_call                    */
     PRSK_OP_ATTACH,   /* first contact from a client thread              */
-    PRSK_OP_DETACH    /* the thread is going away; reap its records      */
+    PRSK_OP_DETACH,   /* the thread is going away; reap its records      */
+    PRSK_OP_SET_CURSOR /* publish a decoded cursor image: the request
+                        * data is one struct prsk_cursor_publish
+                        * (cursorshape.h), no Wine request underneath.
+                        * A proskrnl-only op rather than a request number
+                        * because the dispatch table is the pinned tree's
+                        * enum request, generated (tools/gen_server_table.py)
+                        * and closed */
 };
 
 /* Kept 8-byte aligned and free of pointers: the section is mapped at
@@ -130,7 +142,7 @@ struct prsk_ring
 
 /* Bumped only if the layout above changes incompatibly; both ends check it,
  * so a stale client meets a refusal rather than a silent misparse. */
-#define PRSK_RING_VERSION 2
+#define PRSK_RING_VERSION 3
 
 #endif /* PRSK_TRANSPORT_NAMES_ONLY */
 
