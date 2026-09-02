@@ -90,6 +90,47 @@ int KiPciFindDevice(uint16_t vendor, uint16_t deviceLow, uint16_t deviceHigh, un
     return 0;
 }
 
+int KiPciFindDeviceByClass(uint8_t baseClass, uint8_t subClass, uint8_t progIf, unsigned nth,
+                           KI_PCI_FUNCTION *out)
+{
+    for (uint8_t device = 0; device < 32; device++)
+    {
+        for (uint8_t function = 0; function < 8; function++)
+        {
+            KI_PCI_FUNCTION f = {device, function, 0, 0};
+            uint32_t id = KiPciReadConfig32(&f, PCI_CONFIG_VENDOR_ID);
+            if ((id & 0xFFFF) == 0xFFFF)
+            {
+                if (function == 0)
+                {
+                    break; /* all-ones: no device (PCI 3.0 §6.1); slot empty */
+                }
+                continue;
+            }
+            f.vendorId = (uint16_t)id;
+            f.deviceId = (uint16_t)(id >> 16);
+            /* The dword at 08h is revision id | prog-if << 8 | sub-class
+             * << 16 | base class << 24 (PCI 3.0 §6.1 Figure 6-1). */
+            uint32_t classDword = KiPciReadConfig32(&f, PCI_CONFIG_REVISION);
+            if ((uint8_t)(classDword >> 24) == baseClass &&
+                (uint8_t)(classDword >> 16) == subClass && (uint8_t)(classDword >> 8) == progIf)
+            {
+                if (nth == 0)
+                {
+                    *out = f;
+                    return 1;
+                }
+                nth--;
+            }
+            if (function == 0 && (KiPciReadConfig8(&f, PCI_CONFIG_HEADER_TYPE) & 0x80) == 0)
+            {
+                break; /* single-function device (PCI §6.2.1) */
+            }
+        }
+    }
+    return 0;
+}
+
 uint8_t KiPciFindCapability(const KI_PCI_FUNCTION *f, uint8_t capabilityId, uint8_t previous)
 {
     if ((KiPciReadConfig16(f, PCI_CONFIG_STATUS) & PCI_STATUS_CAPABILITIES_LIST) == 0)

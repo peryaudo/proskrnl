@@ -84,6 +84,15 @@ void KiPciWriteConfig16(const KI_PCI_FUNCTION *f, uint8_t offset, uint16_t value
 int KiPciFindDevice(uint16_t vendor, uint16_t deviceLow, uint16_t deviceHigh, unsigned nth,
                     KI_PCI_FUNCTION *out);
 
+/* The class-code counterpart of KiPciFindDevice: the (nth+1)-th function
+ * whose base class / sub-class / programming interface (PCI 3.0 §6.2.1,
+ * the three bytes above the revision id) match. For a controller whose
+ * vendor is whoever built the board — an xHCI host is class 0Ch/03h/30h on
+ * every vendor's silicon and on QEMU's alike — the class is the only
+ * identity that survives leaving the emulator. */
+int KiPciFindDeviceByClass(uint8_t baseClass, uint8_t subClass, uint8_t progIf, unsigned nth,
+                           KI_PCI_FUNCTION *out);
+
 /* Read a BAR as a 64-bit physical address (handles the 64-bit memory BAR
  * encoding; returns 0 for an I/O BAR or an unimplemented BAR). */
 uint64_t KiPciReadMemoryBar(const KI_PCI_FUNCTION *f, uint8_t barIndex);
