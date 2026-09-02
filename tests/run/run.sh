@@ -3634,6 +3634,167 @@ gui4() {
     return 0
 }
 
+# USB-1: \Device\Input0/1 over a USB HID boot-protocol keyboard and mouse
+# behind an xHCI (drivers/usb/), on a boot with NO virtio-input at all --
+# the bare-metal input path, exercised under QEMU's own xHCI and usb-hid
+# models. The G5 adaptation is HACK-002's (docs/03 "USB-1 notes"): no
+# oracle has these devices, so what convicts the kernel is that input
+# QEMU injects from outside -- QMP send-key, input-send-event rel and btn
+# -- comes back out of the read path and the raw-input pump as the exact
+# key and the exact cursor delta. The clients are gui4's pair, unchanged
+# (user/smss/session.c usbinput row): a click, a key, a shifted key --
+# the modifier byte of the boot report -- must reach the right window.
+# usb-mouse, not usb-tablet: the tablet offers no boot protocol (pinned
+# hw/usb/dev-hid.c desc_iface_tablet, subclass 0), and this driver drives
+# nothing else. The mouse rides usb_version=1 (full speed, bMaxPacketSize0
+# 8) so one boot covers a full-speed device beside the high-speed keyboard.
+usbinput() {
+    local img
+    img="$(test_image_copy "$ROOT/build/tests/usbinput.hdd")" || exit 1
+    local dir="$ROOT/build/tests"
+    local sock="$dir/usbinput.sock" log="$dir/usbinput.log"
+    mkdir -p "$dir"
+    rm -f "$sock" "$log"
+
+    QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="qemu-xhci usb-kbd usb-mouse,usb_version=1" \
+        MEM="${MEM:-1536M}" TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-USBINPUT-NEVER' \
+        GUEST_SERIAL=1 GUEST_LEG=usbinput \
+        "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
+    local qemu_wrapper=$!
+
+    await() {
+        local pattern="$1" deadline=$((SECONDS + ${GUI_DEADLINE:-900}))
+        while ((SECONDS < deadline)); do
+            grep -qE "$pattern" "$log" 2>/dev/null && return 0
+            kill -0 "$qemu_wrapper" 2>/dev/null || return 1  # QEMU died first
+            sleep 1
+        done
+        return 1
+    }
+    # The pointer echo repeats coordinates (a move back over an old spot),
+    # so a motion is awaited by COUNT: the n-th echo line, not a matching one.
+    await_count() {
+        local pattern="$1" want="$2" deadline=$((SECONDS + ${GUI_DEADLINE:-900}))
+        while ((SECONDS < deadline)); do
+            local have
+            have=$(grep -cE "$pattern" "$log" 2>/dev/null || true)
+            ((have >= want)) && return 0
+            kill -0 "$qemu_wrapper" 2>/dev/null || return 1
+            sleep 1
+        done
+        return 1
+    }
+    usbinput_fail() {
+        python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
+        wait "$qemu_wrapper" 2>/dev/null || true
+        echo "== usbinput: FAIL ($1; see $log) =="
+        return 1
+    }
+    qmp() { python3 "$ROOT/tests/gui/qmpctl.py" "$sock" "$@"; }
+
+    # The kernel's own account first: the controller came up, and both
+    # devices were found, classified by their own interface descriptors
+    # and put in boot protocol. Then the desktop, then the readers.
+    await '\[KTEST\] usb xhci READY' || { usbinput_fail "the kernel never brought the xHCI up"; return 1; }
+    await '\[KTEST\] usb hid keyboard ' || { usbinput_fail "no boot-protocol keyboard was attached"; return 1; }
+    await '\[KTEST\] usb hid mouse ' || { usbinput_fail "no boot-protocol mouse was attached"; return 1; }
+    await '\[KTEST\] gui4 A ready rect=' || { usbinput_fail "A never came up"; return 1; }
+    await '\[KTEST\] gui4 B ready wrect=.* ztop=PASS' || { usbinput_fail "B never came up above A"; return 1; }
+    await '\[KTEST\] gui2 input READY' || { usbinput_fail "no keyboard reader"; return 1; }
+    # A relative device publishes no absolute range (drivers/hidproto.h).
+    await '\[KTEST\] gui4 mouse READY abs=0\.\.0,0\.\.0' \
+        || { usbinput_fail "no pointer reader, or the pointer claimed an abs range"; return 1; }
+
+    local a_line b_line
+    a_line=$(grep -oE '\[KTEST\] gui4 A ready rect=[-0-9]+,[-0-9]+,[0-9]+x[0-9]+' "$log" | tail -1)
+    b_line=$(grep -oE '\[KTEST\] gui4 B ready wrect=[-0-9]+,[-0-9]+,[0-9]+x[0-9]+ crect=[-0-9]+,[-0-9]+,[0-9]+x[0-9]+' "$log" | tail -1)
+    local ax ay aw ah cx cy cw ch
+    ax=$(sed -E 's/.*rect=(-?[0-9]+),.*/\1/' <<<"$a_line")
+    ay=$(sed -E 's/.*rect=-?[0-9]+,(-?[0-9]+),.*/\1/' <<<"$a_line")
+    aw=$(sed -E 's/.*,([0-9]+)x[0-9]+$/\1/' <<<"$a_line")
+    ah=$(sed -E 's/.*x([0-9]+)$/\1/' <<<"$a_line")
+    cx=$(sed -E 's/.*crect=(-?[0-9]+),.*/\1/' <<<"$b_line")
+    cy=$(sed -E 's/.*crect=-?[0-9]+,(-?[0-9]+),.*/\1/' <<<"$b_line")
+    cw=$(sed -E 's/.*crect=-?[0-9]+,-?[0-9]+,([0-9]+)x.*/\1/' <<<"$b_line")
+    ch=$(sed -E 's/.*crect=-?[0-9]+,-?[0-9]+,[0-9]+x([0-9]+).*/\1/' <<<"$b_line")
+    if [ -z "$ax" ] || [ -z "$ch" ]; then
+        usbinput_fail "could not parse the windows' geometry"; return 1
+    fi
+
+    # Relative motion is only ever a delta from where the server last put
+    # the cursor, so the first move establishes the base (its echo is the
+    # server's post-clip answer) and every move after it is asserted to
+    # the pixel: base + delta, or the report was mangled somewhere between
+    # QEMU's HID model and the pump. One relmove is one boot report
+    # (qmpctl.py), so |delta| stays within a signed byte.
+    local ptr_re='\[KTEST\] gui4 ptr x=-?[0-9]+ y=-?[0-9]+ btn='
+    local echoes px py
+    echoes=$(grep -cE "$ptr_re" "$log" 2>/dev/null || true)
+    qmp relmove 50 50 || { usbinput_fail "relmove failed"; return 1; }
+    echoes=$((echoes + 1))
+    await_count "$ptr_re" "$echoes" || { usbinput_fail "the first relative move never echoed"; return 1; }
+    local base
+    base=$(grep -oE "$ptr_re" "$log" | tail -1)
+    px=$(sed -E 's/.*x=(-?[0-9]+) .*/\1/' <<<"$base")
+    py=$(sed -E 's/.*y=(-?[0-9]+) .*/\1/' <<<"$base")
+    move_by() {
+        qmp relmove "$1" "$2" || return 1
+        px=$((px + $1)); py=$((py + $2))
+        echoes=$((echoes + 1))
+        await_count "$ptr_re" "$echoes" || return 1
+        grep -oE "$ptr_re" "$log" | tail -1 | grep -qE "x=$px y=$py " || return 1
+    }
+    # Walk to an absolute pixel in <= 100-pixel steps, each one asserted.
+    move_to() {
+        while [ "$px" -ne "$1" ] || [ "$py" -ne "$2" ]; do
+            local dx=$(( $1 - px )) dy=$(( $2 - py ))
+            ((dx > 100)) && dx=100; ((dx < -100)) && dx=-100
+            ((dy > 100)) && dy=100; ((dy < -100)) && dy=-100
+            move_by "$dx" "$dy" || return 1
+        done
+    }
+    move_by 40 30 || { usbinput_fail "a relative move did not land base+delta"; return 1; }
+    move_by -25 -10 || { usbinput_fail "a negative relative move did not land base+delta"; return 1; }
+
+    # The overlap of A with B's client area: the click must reach B, the
+    # window on top, and a key must follow the focus there.
+    local ox=$(( ( (ax > cx ? ax : cx) + ( (ax + aw) < (cx + cw) ? (ax + aw) : (cx + cw) ) ) / 2 ))
+    local oy=$(( ( (ay > cy ? ay : cy) + ( (ay + ah) < (cy + ch) ? (ay + ah) : (cy + ch) ) ) / 2 ))
+    move_to "$ox" "$oy" || { usbinput_fail "pointer motion lost on the way to the overlap"; return 1; }
+    qmp button left down && qmp button left up
+    await '\[KTEST\] gui4 B click ' || { usbinput_fail "the overlap click never reached B"; return 1; }
+    qmp sendkey b
+    await '\[KTEST\] gui4 B char=62' || { usbinput_fail "keyboard input never reached B"; return 1; }
+
+    # A's exposed part: focus follows the click; a plain key and a SHIFTED
+    # key (the boot report's modifier byte, usage E1h -> KEY_LEFTSHIFT).
+    move_to $((ax + 50)) $((ay + 50)) || { usbinput_fail "pointer motion lost on the way to A"; return 1; }
+    qmp button left down && qmp button left up
+    await '\[KTEST\] gui4 A click ' || { usbinput_fail "the exposed click never reached A"; return 1; }
+    await '\[KTEST\] gui4 A active' || { usbinput_fail "the click did not activate A"; return 1; }
+    qmp sendkey a
+    await '\[KTEST\] gui4 A char=61' || { usbinput_fail "focus did not follow the click"; return 1; }
+    qmp type A
+    await '\[KTEST\] gui4 A char=41' || { usbinput_fail "the shifted key never arrived as A"; return 1; }
+
+    python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
+    wait "$qemu_wrapper" 2>/dev/null || true
+
+    # Both streams were the USB source's, and nothing virtio fed this boot.
+    if ! grep -q 'hid: \\Device\\Input0 published (usb-hid boot)' "$log" ||
+       ! grep -q 'hid: \\Device\\Input1 published (pointer, usb-hid boot' "$log"; then
+        echo "== usbinput: FAIL (the streams were not published over the USB source; see $log) =="
+        return 1
+    fi
+    if grep -qE 'virtio-input: .* event buffers' "$log"; then
+        echo "== usbinput: FAIL (a virtio-input device came up on a USB-only boot; see $log) =="
+        return 1
+    fi
+    assert_contained_faults "$log" 0 usbinput || return 1
+    echo "== usbinput: PASS (xHCI + USB HID boot keyboard/mouse: keys, shifted key, clicks, exact relative motion) =="
+    return 0
+}
+
 # GUI-5 (docs/02 "GUI finishing"): clipboard, hooks and AttachThreadInput
 # cross-process over the unmodified pinned server, plus the guest half of
 # the font-metrics differential (the same fontdiff.exe the oracle block
@@ -4493,10 +4654,11 @@ case "$MODE" in
     wow64gui) wow64gui ;;
     gui6)     gui6 ;;
     coldinput) coldinput ;;
+    usbinput) usbinput ;;
     winefbunit) winefbunit ;;
     resolvunit) resolvunit ;;
     winetest-gui) winetest_gui ;;
-    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|acpi|cui8|cui9|net|net3|wow64|fatinterop|fatstress|tornwrite|gui|audio|wow64aud|gui2|gui3|gui4|gui5|gui5con|wow64gui|gui6|coldinput|winefbunit|resolvunit|winetest-gui [pair...]}" >&2
+    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|acpi|cui8|cui9|net|net3|wow64|fatinterop|fatstress|tornwrite|gui|audio|wow64aud|gui2|gui3|gui4|gui5|gui5con|wow64gui|gui6|coldinput|usbinput|winefbunit|resolvunit|winetest-gui [pair...]}" >&2
        echo "       subtest = a tests/ntapi test's base name, or a glob over base names" >&2
        echo "       pair    = a winetest <module>[:<subtest>] (ntdll, printf, ntdll:env), or a glob" >&2
        echo "                 (iteration only — the gate is the unfiltered run)" >&2
