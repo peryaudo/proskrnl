@@ -1838,9 +1838,18 @@ The milestone's own deviations (docs/02 CUI-7; the pins live in
   blanket success is a fabricated answer); the one served class
   (`SystemTimeAdjustmentInformation`) stores its pair, and the query side reflects the
   STORED state after a set where the oracle's answer is fixed — pinned pre-set, where
-  the two coincide. `NtShutdownSystem`'s live arms ride the existing `KiQemuExit`
-  convention and the 8042 reset pulse; the refusal arms are the ntapi pins, the live
-  arms the `tests/run/run.sh cui7` leg.
+  the two coincide. `NtShutdownSystem`'s live arms: `ShutdownPowerOff` and
+  `ShutdownNoReboot` both end the machine through **ACPI S5** (`arch/x86_64/power.c`
+  `KiPowerOff`: the FADT's PM1 control block and the DSDT's `\_S5` sleep type that
+  `arch/x86_64/acpi.c` located at boot, after the ACPI-mode enable when the FADT
+  publishes an SMI command port — the ACPI 6.5 §16.1.7 / §16.3.1 sequences, minus the
+  `_PTS` method there is no interpreter to run) — NoReboot *powers off* rather than
+  parking at "it is now safe to turn off your computer", a VM having nobody to press the
+  button; the QEMU isa-debug-exit port is only the said-on-serial fallback where no usable
+  S5 exists; `ShutdownReboot` stays the 8042 reset pulse (the FADT `RESET_REG` is the
+  unbuilt exit). The refusal arms are the ntapi pins, the live arms the `tests/run/run.sh
+  cui7` (ring-3 poweroff, QEMU exits on its own) and `acpi` (QEMU exits with status 0 —
+  the one status the debug port cannot produce) legs.
 
 ## CUI-8 async notes
 
