@@ -4,6 +4,7 @@
 #define PROSKRNL_DRIVERS_VIRTIO_INPUT_H
 
 #include "abi/ntdef.h"
+#include "drivers/hid.h"
 #include "drivers/hidproto.h"
 #include "drivers/virtio/virtio.h"
 
@@ -44,6 +45,11 @@ BOOLEAN VioInputInitialize(void);
 /* The classified instances; NULL when absent. */
 VIO_INPUT_INSTANCE *VioInputKeyboard(void);
 VIO_INPUT_INSTANCE *VioInputPointer(void);
+
+/* The same two as event sources for drivers/hid.c (HID_SOURCE, with the
+ * pointer's cached ABS_INFO range); FALSE when absent. */
+BOOLEAN VioInputKeyboardSource(HID_SOURCE *source);
+BOOLEAN VioInputPointerSource(HID_SOURCE *source);
 
 /* Take one event off an instance's eventq if the device has published one,
  * and re-post its buffer. Returns 0 when nothing is pending -- never blocks;
