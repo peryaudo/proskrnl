@@ -117,6 +117,11 @@ static void KiEnableXApic(void)
     KiApicWindow = (volatile uint8_t *)LAPIC_WINDOW_BASE;
 }
 
+uint64_t KiLocalApicPhysicalAddress(void)
+{
+    return KiReadMsr(IA32_APIC_BASE) & APIC_BASE_ADDRESS;
+}
+
 uint64_t KiTscPerMillisecond;
 
 /* The LAPIC timer's divide configuration, written to LAPIC_TMR_DIV as 0x3

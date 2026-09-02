@@ -18,6 +18,7 @@
 #include "arch/x86_64/lapic.h"
 #include "arch/x86_64/mmu.h"
 #include "arch/x86_64/smbios.h"
+#include "arch/x86_64/acpi.h"
 #include "kernel/lib/dbgprint.h"
 #include "kernel/lib/rtl.h"
 #include "kernel/lib/string.h"
@@ -92,6 +93,17 @@ __attribute__((
     used,
     section(".limine_requests"))) static volatile struct limine_smbios_request LiSmbiosRequest = {
     .id = LIMINE_SMBIOS_REQUEST_ID,
+    .revision = 0,
+};
+
+/* The firmware's RSDP, for the ACPI tables (arch/x86_64/acpi.c): the FADT
+ * and \_S5 that arch/x86_64/power.c powers the machine off with, the MADT.
+ * Physical under base revision 3 (PROTOCOL.md "Base Revision 3" / "RSDP
+ * Feature"; revision 4 would hand back an HHDM pointer — LiBaseRevision
+ * above pins 3). No response at all when the firmware publishes no ACPI. */
+__attribute__((
+    used, section(".limine_requests"))) static volatile struct limine_rsdp_request LiRsdpRequest = {
+    .id = LIMINE_RSDP_REQUEST_ID,
     .revision = 0,
 };
 
@@ -517,6 +529,17 @@ static void KiTestMainThread(void *context)
              libFailures);
     KiVerifyKernelState();
 
+    /* The firmware-table verdicts (tests/kmt/acpi.c): the tables
+     * arch/x86_64/acpi.c located are self-consistent, cross-checked against
+     * the hardware they describe (the LAPIC the MSR names, the PM base the
+     * LPC bridge decodes), and the \_S5 power-off arch/x86_64/power.c will
+     * use is usable. Early, before anything else: nothing here depends on
+     * the executive. */
+    int acpiFailures = kmt_run_acpi();
+    DbgPrint(acpiFailures == 0 ? "[KTEST] ACPI PASS\n" : "[KTEST] ACPI FAIL failures=%d\n",
+             acpiFailures);
+    KiVerifyKernelState();
+
     int m2Failures = kmt_run_m2();
     DbgPrint(m2Failures == 0 ? "[KTEST] M2 PASS\n" : "[KTEST] M2 FAIL failures=%d\n", m2Failures);
     KiVerifyKernelState();
@@ -661,9 +684,9 @@ static void KiTestMainThread(void *context)
      * verdict (tests/run/kmtcheck.sh reads these same lines, which is what
      * `make test` gates on); this status is the second, in-kernel statement of
      * the same total. abiFailures reaches it through KiRunSessionManager. */
-    int total = m2Failures + m3Failures + m4Failures + m5Failures + m6Failures + cui8Failures +
-                condrvFailures + preventiveFailures + schedFailures + fatInteropFailures +
-                m7Failures + sessionFailures;
+    int total = acpiFailures + m2Failures + m3Failures + m4Failures + m5Failures + m6Failures +
+                cui8Failures + condrvFailures + preventiveFailures + schedFailures +
+                fatInteropFailures + m7Failures + sessionFailures;
     /* What the clock had to recover to stay honest over this boot (docs/22
      * §4a). Not a verdict — no test in the guest can convict a clock that ran
      * slow, every clock here having shared the error — but the measurement
@@ -766,6 +789,10 @@ void KiSystemStartup(void)
     {
         KiSmbiosInitialize(0, 0); /* no response: the table stays absent */
     }
+    /* The ACPI tables, the same way (physical RSDP under base revision 3;
+     * no response means no ACPI, and the tables stay absent). */
+    KiAcpiInitialize(
+        LiRsdpRequest.response != 0 ? (uint64_t)(uintptr_t)LiRsdpRequest.response->address : 0);
 
     /* M3: the object manager and its namespace roots, on top of the pool. */
     ObpInitializeObjectManager();

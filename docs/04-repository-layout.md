@@ -92,7 +92,9 @@ proskrnl/
 │   ├── trap.S / idt.c               # low-level exception/interrupt
 │   ├── ctxswitch.S
 │   ├── mmu.c                        # page-table ops
-│   └── lapic.c / hpet.c             # direct hardware (not abstracted)
+│   ├── lapic.c / hpet.c             # direct hardware (not abstracted)
+│   ├── smbios.c / fwcfg.c           # firmware tables read for ourselves (SMBIOS; QEMU fw_cfg)
+│   └── acpi.c / power.c             # ACPI tables (RSDP→FADT/DSDT \_S5/MADT); S5 power-off
 │
 ├── drivers/                         # all statically linked; implement vfs.h directly
 │   ├── virtio/

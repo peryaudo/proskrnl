@@ -198,7 +198,9 @@ the PM timer solely as a calibration reference — a device with no other consum
 a poor trade when the two sources above answer directly on the platform we actually target
 and are exact rather than measured. If neither answers on some future machine, this is the
 next thing to build, not a permanent exclusion. Note this is a *boot* cross-check and is a
-different question from the runtime watchdog dismissed in §5.
+different question from the runtime watchdog dismissed in §5. (The FADT is parsed at boot
+now — `arch/x86_64/acpi.c`, for the S5 power-off — so the PM timer's port is one field away;
+the timer itself stays unbuilt for exactly the reason above.)
 
 **Deferred: post-boot refinement.** Linux does not stop at boot — `tsc_refine_calibration_work`
 re-measures roughly a second after boot over a ~1 s window and, if the result is within 1%,
