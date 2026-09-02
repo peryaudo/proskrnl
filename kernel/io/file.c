@@ -17,6 +17,7 @@
 #include "kernel/ke/ke.h"
 #include "drivers/virtio/blk.h"
 #include "drivers/virtio/input.h"
+#include "drivers/usb/xhci.h"
 #include "drivers/virtio/snd.h"
 #include "drivers/virtio/net.h"
 #include "fs/fat32/fat.h"
@@ -605,6 +606,14 @@ void IoInitializeTransport(void)
     if (!VioInputInitialize())
     {
         DbgPrint("io: no input device; \\Device\\Input0 disabled\n");
+    }
+    /* USB-1: the xHCI host controller behind a USB HID keyboard/mouse, the
+     * input source for a machine without virtio-input. Registers and DMA
+     * frames here, for the same PML4 reason; the devices on its ports are
+     * enumerated later, on a thread that can sleep (UsbHidInitialize). */
+    if (!XhciInitialize())
+    {
+        DbgPrint("io: no USB host controller\n");
     }
     /* AUD-1: the PCM transport behind \Device\Snd* (HACK-007). Absent on
      * every run but the audio leg's -- drivers/snd.c then publishes no
