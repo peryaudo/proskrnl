@@ -345,7 +345,7 @@ jobs:
   gui:
     needs: setup
     runs-on: ubuntu-24.04
-    timeout-minutes: 155   # eleven boots under TCG; was 140 with ten before coldinput
+    timeout-minutes: 170   # twelve boots under TCG; was 155 with eleven before usbinput
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/third-party
@@ -471,6 +471,17 @@ jobs:
       - name: "Cold boot accepts input, server owns the readers (tests/run/run.sh coldinput)"
         if: ${{ !cancelled() }}
         run: tests/run/run.sh coldinput
+        env:
+          TIMEOUT: "1200"
+          GUI_DEADLINE: "900"
+
+      # USB-1: the bare-metal input path -- \Device\Input0/1 over a USB HID
+      # boot keyboard and mouse behind an xHCI, with no virtio-input on the
+      # command line. QMP send-key / rel / btn come back out as the exact
+      # key, the exact cursor delta, and a click on the right window.
+      - name: "USB HID boot keyboard and mouse over xHCI (tests/run/run.sh usbinput)"
+        if: ${{ !cancelled() }}
+        run: tests/run/run.sh usbinput
         env:
           TIMEOUT: "1200"
           GUI_DEADLINE: "900"
