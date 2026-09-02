@@ -45,7 +45,7 @@ runs:
         git config --global url."https://github.com/".insteadOf "git@github.com:"
         git submodule update --init --depth 1 \
           third_party/limine third_party/limine-protocol third_party/qemu third_party/wine \
-          third_party/freetype third_party/flanterm third_party/lwip
+          third_party/freetype third_party/flanterm third_party/lwip third_party/keycodemapdb
 
     # The submodule pins ARE the cache key (git ls-tree reads them from the
     # superproject tree, no submodule checkout needed). Only the submodules

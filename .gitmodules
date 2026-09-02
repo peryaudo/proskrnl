@@ -32,3 +32,7 @@
 	url = https://github.com/lwip-tcpip/lwip.git
 	shallow = true
 	ignore = dirty
+[submodule "third_party/keycodemapdb"]
+	path = third_party/keycodemapdb
+	url = https://gitlab.com/qemu-project/keycodemapdb.git
+	shallow = true
