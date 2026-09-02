@@ -96,4 +96,14 @@ uint64_t KiPciReadMemoryBar(const KI_PCI_FUNCTION *f, uint8_t barIndex);
  * reachable. Returns the capability's config-space offset, or 0. */
 uint8_t KiPciFindCapability(const KI_PCI_FUNCTION *f, uint8_t capabilityId, uint8_t previous);
 
+/* Map `length` bytes of device MMIO at `physical` into the kernel and return
+ * the VA — the tree's ONE device-MMIO window (Art. 11): a single VA cursor
+ * every bus driver draws from, so no two drivers can hand out overlapping
+ * mappings. Pages are mapped uncacheable (MiMapDevicePage). The window may
+ * claim a fresh kernel PML4 slot, so every call must precede
+ * MiFreezeKernelPml4 (IoInitializeTransport is the place; kernel/init/main.c
+ * order). Nothing is ever unmapped: a driver that probed and failed keeps
+ * its pages, which is the price of a cursor over a free list. */
+void *KiPciMapMmio(uint64_t physical, uint64_t length);
+
 #endif /* PROSKRNL_DRIVERS_PCI_H */

@@ -6,48 +6,19 @@
  * public spec only (docs/11).
  *
  * This is the one authority for bringing a virtio function up (G10/Art. 11).
- * It exists as its own file because the BAR mapping window below is a single
- * kernel VA cursor: a driver carrying its own copy would hand out VAs that
- * overlap another driver's mappings.
  *
  * MMIO note: the virtio BARs live outside the Limine memmap, so their frames
- * are mapped explicitly into a dedicated kernel VA window. This happens
- * during Io initialization, BEFORE MiFreezeKernelPml4 (kernel/init/main.c
- * order), so the window may claim a fresh PML4 slot.
+ * are mapped explicitly into the tree's one device-MMIO window
+ * (KiPciMapMmio, drivers/pci.c). This happens during Io initialization,
+ * BEFORE MiFreezeKernelPml4 (kernel/init/main.c order), so the window may
+ * claim a fresh PML4 slot.
  */
 #include "drivers/virtio/virtio.h"
 #include "drivers/pci.h"
 #include "arch/x86_64/lapic.h" /* KI_MSI_MESSAGE_* (SDM Vol. 3A §11.11) */
-#include "arch/x86_64/mmu.h"
 #include "kernel/mm/phys.h"
 #include "kernel/lib/dbgprint.h"
 #include "kernel/lib/string.h"
-
-/* Kernel VA window the BAR structures are mapped into (fresh PML4 slot; see
- * the MMIO note above). One cursor for the whole tree. */
-#define VIO_MMIO_WINDOW_BASE 0xFFFFA10000000000ULL
-static uint64_t VioMmioWindowCursor = VIO_MMIO_WINDOW_BASE;
-
-/* Map a BAR-relative MMIO region and return its kernel VA. */
-static void *VioMapMmio(uint64_t physical, uint64_t length)
-{
-    uint64_t first = physical & ~(uint64_t)(PAGE_SIZE - 1);
-    uint64_t last = (physical + length + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
-    uint64_t base = VioMmioWindowCursor;
-    for (uint64_t page = first; page < last; page += PAGE_SIZE)
-    {
-        /* MiMapDevicePage, not MiMapPage: these are device registers, and a
-         * write-back cacheable mapping means the CPU may satisfy a read from
-         * cache and hold a write in a store buffer -- `volatile` constrains
-         * the compiler, not the cache (docs/review-2026-07 §8). This worked
-         * only because firmware happens to leave the PCI hole UC in the
-         * MTRRs, which nothing here establishes or checks. arch/x86_64/mmu.c
-         * has the mapping for exactly this; lapic.c already uses it. */
-        MiMapDevicePage(VioMmioWindowCursor, page);
-        VioMmioWindowCursor += PAGE_SIZE;
-    }
-    return (void *)(uintptr_t)(base + (physical - first));
-}
 
 /* Resolve one virtio capability (virtio 1.2 cs01 §4.1.4) to a mapped VA.
  * Returns 0 when the capability type is absent. */
@@ -100,7 +71,7 @@ static void *VioFindCapability(const KI_PCI_FUNCTION *f, uint8_t wantedType,
             {
                 *lengthOut = length;
             }
-            return VioMapMmio(barBase + barOffset, length);
+            return KiPciMapMmio(barBase + barOffset, length);
         }
     }
     return 0;
@@ -262,7 +233,7 @@ BOOLEAN VioPciSetupMsix(VIO_PCI_DEVICE *device, uint16_t msixEntry, uint8_t vect
         VioPciSetFailed(device);
         return FALSE;
     }
-    device->msixTable = VioMapMmio(barBase + tableOffset, (uint64_t)tableSize * 16);
+    device->msixTable = KiPciMapMmio(barBase + tableOffset, (uint64_t)tableSize * 16);
 
     /* Program under mask (PCI 3.0 §6.8.3.5): Enable + Function Mask first,
      * so no entry can fire half-written; entries also reset per-entry

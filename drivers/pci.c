@@ -1,6 +1,13 @@
 /* drivers/pci.c — minimal PCI configuration access (see pci.h). */
 #include "drivers/pci.h"
 #include "arch/x86_64/io.h"
+#include "arch/x86_64/mmu.h"
+#include "kernel/mm/phys.h"
+
+/* Kernel VA window device MMIO is mapped into (a fresh PML4 slot; see
+ * KiPciMapMmio in pci.h). One cursor for the whole tree. */
+#define KI_PCI_MMIO_WINDOW_BASE 0xFFFFA10000000000ULL
+static uint64_t KiPciMmioWindowCursor = KI_PCI_MMIO_WINDOW_BASE;
 
 /* CONFIG_ADDRESS / CONFIG_DATA, PCI Local Bus Spec 3.0 §3.2.2.3.2: enable
  * bit 31, bus 23:16, device 15:11, function 10:8, DWORD register 7:2. */
@@ -122,4 +129,24 @@ uint64_t KiPciReadMemoryBar(const KI_PCI_FUNCTION *f, uint8_t barIndex)
         address |= (uint64_t)KiPciReadConfig32(f, (uint8_t)(offset + 4)) << 32;
     }
     return address;
+}
+
+void *KiPciMapMmio(uint64_t physical, uint64_t length)
+{
+    uint64_t first = physical & ~(uint64_t)(PAGE_SIZE - 1);
+    uint64_t last = (physical + length + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
+    uint64_t base = KiPciMmioWindowCursor;
+    for (uint64_t page = first; page < last; page += PAGE_SIZE)
+    {
+        /* MiMapDevicePage, not MiMapPage: these are device registers, and a
+         * write-back cacheable mapping means the CPU may satisfy a read from
+         * cache and hold a write in a store buffer -- `volatile` constrains
+         * the compiler, not the cache (docs/review-2026-07 §8). This worked
+         * only because firmware happens to leave the PCI hole UC in the
+         * MTRRs, which nothing here establishes or checks. arch/x86_64/mmu.c
+         * has the mapping for exactly this; lapic.c already uses it. */
+        MiMapDevicePage(KiPciMmioWindowCursor, page);
+        KiPciMmioWindowCursor += PAGE_SIZE;
+    }
+    return (void *)(uintptr_t)(base + (physical - first));
 }
