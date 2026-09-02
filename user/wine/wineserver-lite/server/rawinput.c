@@ -589,6 +589,8 @@ struct pointer_report
 {
     UINT last_x, last_y; /* raw device values; persist across reports */
     BOOL moved;          /* an axis changed since the last SYN */
+    int rel_x, rel_y;    /* a relative device's deltas since the last SYN */
+    BOOL moved_rel;
     UINT buttons;        /* bit 0/1/2 = left/right/middle, for the marker */
     union hw_input clicks[POINTER_MAX_CLICKS];
     UINT click_count;
@@ -643,6 +645,26 @@ static void pointer_flush_report( struct pointer_report *report, const HID_ABS_I
         input.mouse.flags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE_NOCOALESCE;
         inject_pointer( &input, report );
         report->moved = FALSE;
+    }
+    /* A relative device (USB-1's boot mouse, drivers/hidproto.h: its abs
+     * range is all zeros) moves the cursor the way mouse_event does: a
+     * MOUSEEVENTF_MOVE without ABSOLUTE is a delta from wherever the server
+     * has the cursor, clipped by the server (queue.c queue_mouse_message).
+     * The position the server answers is the one reported and drawn. */
+    if (report->moved_rel)
+    {
+        union hw_input input;
+
+        memset( &input, 0, sizeof(input) );
+        input.type = INPUT_MOUSE;
+        input.mouse.x = report->rel_x;
+        input.mouse.y = report->rel_y;
+        input.mouse.flags = MOUSEEVENTF_MOVE | MOUSEEVENTF_MOVE_NOCOALESCE;
+        inject_pointer( &input, report );
+        report->screen_x = report->cursor_x;
+        report->screen_y = report->cursor_y;
+        report->rel_x = report->rel_y = 0;
+        report->moved_rel = FALSE;
     }
     for (i = 0; i < report->click_count; i++) inject_pointer( &report->clicks[i], report );
     report->click_count = 0;
@@ -700,9 +722,19 @@ static DWORD WINAPI pointer_thread( void *arg )
                 if (event->code == HID_REL_WHEEL)
                     pointer_add_click( &report, MOUSEEVENTF_WHEEL,
                                        (DWORD)((int)event->value * WHEEL_DELTA) );
+                else if (event->code == HID_REL_X)
+                {
+                    report.rel_x += (int)event->value;
+                    report.moved_rel = TRUE;
+                }
+                else if (event->code == HID_REL_Y)
+                {
+                    report.rel_y += (int)event->value;
+                    report.moved_rel = TRUE;
+                }
                 break;
             case HID_EV_SYN:
-                if (report.moved || report.click_count)
+                if (report.moved || report.moved_rel || report.click_count)
                 {
                     pointer_flush_report( &report, &abs );
                     flushed = TRUE;
