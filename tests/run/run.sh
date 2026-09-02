@@ -4336,6 +4336,46 @@ gui6() {
         return 1
     fi
 
+    # --- the shape sweep: the cursor changes with the window under it. The
+    # browser window sits at 0,0 640x480 (awaited above); its left edge is a
+    # sizing border, so the pointer there makes explorer's DefWindowProc set
+    # IDC_SIZEWE (dlls/win32u/defwnd.c handle_set_cursor, HTLEFT), and bare
+    # desktop makes its desktop window set IDC_ARROW again. Each is a
+    # 'gui4 cursor ... res=<OCR_* id>' line from EXPLORER's process
+    # (cursor.c winefb_set_cursor; ids: include/winuser.rh OCR_SIZEWE 32644,
+    # OCR_NORMAL 32512), counted rather than merely found -- the arrow line
+    # already exists from the boot's own cursor resync -- and the pin is that
+    # each move ADDS one. A refused set_cursor anywhere in the log fails the
+    # leg outright: the only refusal that handler has is an invalid handle,
+    # which is a shape that never reached the server.
+    count_shapes() { grep -acE "\[KTEST\] gui4 cursor hwnd=[0-9a-f]+ handle=\S+ res=$1\b" "$log" 2>/dev/null || true; }
+    await_shape() {   # $1 = OCR id, $2 = count before the move, $3 = what
+        local deadline=$((SECONDS + 60))
+        while ((SECONDS < deadline)); do
+            if [ "$(count_shapes "$1")" -gt "$2" ]; then return 0; fi
+            if desktop_died; then gui6_fail "explorer exited (the [KTEST] gui6 FAIL line names the status)"; return 1; fi
+            kill -0 "$qemu_wrapper" 2>/dev/null || { gui6_fail "QEMU died during the shape sweep"; return 1; }
+            sleep 1
+        done
+        gui6_fail "$3 (no new 'gui4 cursor ... res=$1' line within 60s)"
+        return 1
+    }
+    local before_we before_arrow
+    before_we=$(count_shapes 32644)
+    px=1; py=240
+    vx=$(( (px * maxx + w - 2) / (w - 1) )); vy=$(( (py * maxy + h - 2) / (h - 1) ))
+    qmp absmove "$vx" "$vy" >/dev/null 2>&1 || true
+    await_shape 32644 "$before_we" "the browser window's left border never set the horizontal resize cursor" || return 1
+    before_arrow=$(count_shapes 32512)
+    px=$((w - 10)); py=$((h - 60))
+    vx=$(( (px * maxx + w - 2) / (w - 1) )); vy=$(( (py * maxy + h - 2) / (h - 1) ))
+    qmp absmove "$vx" "$vy" >/dev/null 2>&1 || true
+    await_shape 32512 "$before_arrow" "bare desktop never set the arrow back" || return 1
+    if grep -qa "wineserver-lite: set_cursor failed" "$log"; then
+        gui6_fail "the server refused a set_cursor request (a shape that never reached it)"
+        return 1
+    fi
+
     python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
     wait "$qemu_wrapper" 2>/dev/null || true
     assert_contained_faults "$log" 0 gui6 || return 1

@@ -79,6 +79,9 @@ START_TEST(gui4a)
     cls.lpfnWndProc = wndproc_a;
     cls.hInstance = GetModuleHandleW(NULL);
     cls.lpszClassName = class_a;
+    /* The arrow, explicitly: the drag crosses this window, and a class
+     * with no cursor shows none (gui4b.c says why B's is the I-beam). */
+    cls.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
     ok(RegisterClassW(&cls) != 0, "RegisterClassW");
 
     hwnd = CreateWindowExW(0, class_a, title_a, WS_POPUP | WS_VISIBLE, A_X, A_Y, A_W, A_H, NULL,
