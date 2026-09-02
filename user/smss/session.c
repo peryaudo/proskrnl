@@ -1072,6 +1072,16 @@ static const GUI_LEG SessionGuiLegs[] = {
      .foreground = WSTR("\\??\\C:\\gui4b.exe"),
      .tag = "gui4"},
 
+    /* USB-1: the gui4 pair again, on a boot whose only input devices are
+     * a USB HID boot keyboard and mouse behind an xHCI (drivers/usb/). The
+     * clients are the same programs printing the same lines; what differs
+     * is the source behind \Device\Input0/1 and that the pointer is
+     * relative, which tests/run/run.sh usbinput drives with rel moves. */
+    {.leg = "usbinput",
+     .background = WSTR("\\??\\C:\\gui4a.exe"),
+     .foreground = WSTR("\\??\\C:\\gui4b.exe"),
+     .tag = "usbinput"},
+
     /* GUI-5 (docs/02 "GUI finishing"): clipboard, hooks and AttachThreadInput
      * cross-process, plus the guest half of the font-metrics differential.
      * fontdiff is the prologue for two reasons: its metric lines must land

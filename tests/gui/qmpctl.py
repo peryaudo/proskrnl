@@ -5,6 +5,7 @@
     qmpctl.py <socket> sendkey <qcode> [<qcode>...]
     qmpctl.py <socket> type <text>
     qmpctl.py <socket> absmove <x> <y>
+    qmpctl.py <socket> relmove <dx> <dy>
     qmpctl.py <socket> button <name> <down|up>
     qmpctl.py <socket> nmi
     qmpctl.py <socket> quit
@@ -159,6 +160,26 @@ def main(argv):
         events = [
             {"type": "abs", "data": {"axis": "x", "value": x}},
             {"type": "abs", "data": {"axis": "y", "value": y}},
+        ]
+        qmp.execute("input-send-event", events=events)
+    elif command == "relmove":
+        # A relative pointer (usb-mouse): one input-send-event carrying both
+        # axes is one qemu_input_event_sync, so the guest sees ONE report
+        # with both deltas (pinned tree hw/input/hid.c hid_pointer_sync).
+        # The HID boot report is a signed byte per axis and QEMU clamps to
+        # +-127 per report (hid_pointer_poll int_clamp), carrying the rest
+        # into the next poll -- keep |d| <= 127 so one command is one
+        # report and the echo the guest prints is exactly the delta.
+        if len(arguments) != 2:
+            print("qmpctl: relmove takes dx dy (-127..127)", file=sys.stderr)
+            return 2
+        dx, dy = int(arguments[0]), int(arguments[1])
+        if not (-127 <= dx <= 127 and -127 <= dy <= 127):
+            print("qmpctl: relmove deltas must be within -127..127", file=sys.stderr)
+            return 2
+        events = [
+            {"type": "rel", "data": {"axis": "x", "value": dx}},
+            {"type": "rel", "data": {"axis": "y", "value": dy}},
         ]
         qmp.execute("input-send-event", events=events)
     elif command == "button":
