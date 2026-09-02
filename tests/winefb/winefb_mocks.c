@@ -84,6 +84,15 @@ int abs(int value)
     return value < 0 ? -value : value;
 }
 
+/* wine/debug.h's inline formatter reaches for it (cursor.c's TRACE); every
+ * channel is off below, so it never runs, but it has to link */
+int __cdecl __ms_vsnprintf(char *buffer, size_t size, const char *format, va_list args)
+{
+    if (size)
+        buffer[0] = 0;
+    return 0;
+}
+
 /* --- wine/debug.h ---------------------------------------------------------
  *
  * Every channel answers "off", so TRACE/WARN/ERR compile to nothing at run
@@ -110,13 +119,9 @@ int __cdecl __wine_dbg_header(enum __wine_debug_class cls, struct __wine_debug_c
     return -1;
 }
 
-/* --- the driver globals display.c/cursor.c/init.c would provide -- */
+/* --- the driver globals display.c/init.c would provide -- */
 
 struct winefb_scanout winefb_scanout;
-
-void winefb_cursor_present(void)
-{
-}
 
 static unsigned int report_count;
 
@@ -290,6 +295,185 @@ BOOL WINAPI NtGdiDeleteObjectApp(HGDIOBJ obj)
 DWORD WINAPI NtGdiGetRegionData(HRGN hrgn, DWORD count, RGNDATA *data)
 {
     return GetRegionData(hrgn, count, data);
+}
+
+/* --- the cursor seam (cursor.c) ---------------------------------------------
+ *
+ * Three things cursor.c reaches for, mocked: the desktop's shared position
+ * (the seqlock read get_shared_desktop serves), the server's published
+ * image (call.c's read-only view and PRSK_OP_SET_CURSOR), and the NtGdi /
+ * NtUser calls that turn an HCURSOR into bits -- forwarded to the pinned
+ * user32/gdi32, so the decode under test runs against the oracle's own
+ * cursor objects and its own GetDIBits (G10, the region-engine reasoning
+ * again). What stays REAL is every line of cursor.c. */
+
+static desktop_shm_t mock_desktop_shm;
+
+NTSTATUS get_shared_desktop(struct object_lock *lock, const desktop_shm_t **desktop_shm)
+{
+    /* the object_lock protocol (win32u_private.h): PENDING with the pointer
+     * on the first call, the loop body reads, SUCCESS on the second */
+    if (!lock->id)
+    {
+        lock->id = 1;
+        *desktop_shm = &mock_desktop_shm;
+        return STATUS_PENDING;
+    }
+    return STATUS_SUCCESS;
+}
+
+void unit_set_pointer(int x, int y)
+{
+    mock_desktop_shm.cursor.x = x;
+    mock_desktop_shm.cursor.y = y;
+}
+
+static struct prsk_cursor_image mock_cursor; /* what the "server" holds */
+static unsigned int cursor_publish_count, cursor_publish_hwnd, cursor_publish_flags;
+static unsigned int cursor_refuse_status;
+
+const volatile struct prsk_cursor_image *prsk_client_cursor_image(void)
+{
+    return &mock_cursor;
+}
+
+unsigned int prsk_client_publish_cursor(const struct prsk_cursor_publish *publish)
+{
+    unsigned int count;
+
+    if (cursor_refuse_status)
+        return cursor_refuse_status;
+    /* the server's write (shim.c cursor_write): odd, fields, even */
+    mock_cursor.seq++;
+    mock_cursor.width = publish->image.width;
+    mock_cursor.height = publish->image.height;
+    mock_cursor.hot_x = publish->image.hot_x;
+    mock_cursor.hot_y = publish->image.hot_y;
+    count = publish->image.width * publish->image.height;
+    memcpy(mock_cursor.pixels, publish->image.pixels, count * sizeof(mock_cursor.pixels[0]));
+    mock_cursor.generation++;
+    mock_cursor.seq++;
+    cursor_publish_count++;
+    cursor_publish_hwnd = publish->hwnd;
+    cursor_publish_flags = publish->flags;
+    return STATUS_SUCCESS;
+}
+
+void unit_set_cursor(unsigned int hwnd, unsigned long long handle)
+{
+    winefb_set_cursor((HWND)(UINT_PTR)hwnd, (HCURSOR)(UINT_PTR)handle);
+}
+
+void unit_publish_desktop_default(void)
+{
+    winefb_cursor_publish_desktop_default();
+}
+
+void unit_present(void)
+{
+    winefb_cursor_present();
+}
+
+void unit_cursor_refuse(unsigned int status)
+{
+    cursor_refuse_status = status;
+}
+
+unsigned int unit_cursor_publish_count(void)
+{
+    return cursor_publish_count;
+}
+
+unsigned int unit_cursor_hwnd(void)
+{
+    return cursor_publish_hwnd;
+}
+
+unsigned int unit_cursor_flags(void)
+{
+    return cursor_publish_flags;
+}
+
+unsigned int unit_cursor_width(void)
+{
+    return mock_cursor.width;
+}
+
+unsigned int unit_cursor_height(void)
+{
+    return mock_cursor.height;
+}
+
+int unit_cursor_hot_x(void)
+{
+    return mock_cursor.hot_x;
+}
+
+int unit_cursor_hot_y(void)
+{
+    return mock_cursor.hot_y;
+}
+
+unsigned int unit_cursor_pixel(unsigned int x, unsigned int y)
+{
+    if (x >= mock_cursor.width || y >= mock_cursor.height)
+        return 0xdeadbeef;
+    return mock_cursor.pixels[y * mock_cursor.width + x];
+}
+
+static void cursor_mock_reset(void)
+{
+    memset(&mock_cursor, 0, sizeof(mock_cursor));
+    memset(&mock_desktop_shm, 0, sizeof(mock_desktop_shm));
+    cursor_publish_count = cursor_publish_hwnd = cursor_publish_flags = 0;
+    cursor_refuse_status = 0;
+}
+
+/* the HCURSOR unpack and the bitmap reads: user32/gdi32, the same engine */
+BOOL WINAPI NtUserGetIconInfo(HICON icon, ICONINFO *info, UNICODE_STRING *module,
+                              UNICODE_STRING *res_name, DWORD *bpp, LONG unk)
+{
+    ICONINFOEXW ex;
+
+    ex.cbSize = sizeof(ex);
+    if (!GetIconInfoExW(icon, &ex))
+        return FALSE;
+    info->fIcon = ex.fIcon;
+    info->xHotspot = ex.xHotspot;
+    info->yHotspot = ex.yHotspot;
+    info->hbmMask = ex.hbmMask;
+    info->hbmColor = ex.hbmColor;
+    if (module)
+        module->Length = 0;
+    if (res_name)
+    {
+        /* the win32u spelling of an integer resource name: the id in Buffer,
+         * Length 0 (dlls/win32u/cursoricon.c NtUserGetIconInfo) */
+        res_name->Length = 0;
+        res_name->Buffer = (WCHAR *)(ULONG_PTR)ex.wResID;
+    }
+    return TRUE;
+}
+
+INT WINAPI NtGdiGetDIBitsInternal(HDC hdc, HBITMAP hbitmap, UINT startscan, UINT lines, void *bits,
+                                  BITMAPINFO *info, UINT coloruse, UINT max_bits, UINT max_info)
+{
+    return GetDIBits(hdc, hbitmap, startscan, lines, bits, info, coloruse);
+}
+
+LONG WINAPI NtGdiGetBitmapBits(HBITMAP bitmap, LONG count, void *bits)
+{
+    return GetBitmapBits(bitmap, count, bits);
+}
+
+INT WINAPI NtGdiExtGetObjectW(HGDIOBJ handle, INT count, void *buffer)
+{
+    return GetObjectW(handle, count, buffer);
+}
+
+HDC WINAPI NtGdiCreateCompatibleDC(HDC hdc)
+{
+    return CreateCompatibleDC(hdc);
 }
 
 /* --- NtUserRedrawWindow: recorded, never executed ------------------------- */
@@ -747,6 +931,7 @@ void unit_reset(unsigned int width, unsigned int height)
     raise_count = 0;
     unit_set_button_down(0);
     report_count = 0;
+    cursor_mock_reset();
     for (i = 0; i < UNIT_MAX_WINDOWS; i++)
     {
         if (held[i].surface)

@@ -1292,7 +1292,8 @@ $(W32U_BUILD)/glue/%.o: user/wine/%.c $(FT_SYMS) third_party/wine/include/proskr
 # every compositor POLICY bug is pinned here rather than in a QEMU leg.
 WINEFB_UNIT := $(BUILD)/tests/winefb_unit.exe
 WINEFB_UNIT_DRV := $(W32U_BUILD)/glue/dlls/winefb.drv/compose.o \
-                   $(W32U_BUILD)/glue/dlls/winefb.drv/blit.o
+                   $(W32U_BUILD)/glue/dlls/winefb.drv/blit.o \
+                   $(W32U_BUILD)/glue/dlls/winefb.drv/cursor.o
 $(W32U_BUILD)/winefb_mocks.o: tests/winefb/winefb_mocks.c tests/winefb/winefb_unit.h \
         user/wine/dlls/winefb.drv/winefb.h $(FT_SYMS)
 	@mkdir -p $(dir $@)
