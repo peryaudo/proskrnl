@@ -594,8 +594,9 @@ That is now two accepted-and-dropped capability probes in this one pair
 (`MEM_EXTENDED_PARAMETER_EC_CODE` was the first), which still makes "sweep the
 boundary for accepted-and-dropped words" a better-evidenced hunt than any
 single item left here — and `docs/16`'s serial line
-(`ps: NtSetInformationProcess class N accepted as a no-op`) is where that sweep
-starts, because it named this one in the winetest log all along.
+(`ps: NtSetInformationProcess class N accepted as a no-op`) was where that sweep
+started, because it named this one in the winetest log all along. (That arm is
+since retired: an unbuilt class now refuses loudly, `docs/16`.)
 
 **The KUSER_SHARED_DATA / cpu-fields group is DONE** (`ntdll:virtual` 1115 →
 **1111**), and it is the smallest item in this section with the largest reach

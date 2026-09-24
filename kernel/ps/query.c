@@ -5,8 +5,7 @@
  * classes, the timer/perf counter, the graceful-failure registry + NLS slice
  * (Cm proper is M8, NLS data is furniture), and the scheduling primitives
  * (NtDelayExecution / NtYieldExecution). io/query.c is the model for the
- * struct-filling (docs/05: the easiest kernel work). Classes with no
- * observable effect on a single-CPU proskrnl are accepted; unimplemented ones
+ * struct-filling (docs/05: the easiest kernel work). Unimplemented classes
  * name themselves via STATUS_NOT_IMPLEMENTED.
  */
 #include "kernel/ps/ps.h"
@@ -1051,9 +1050,8 @@ NTSTATUS NtSetInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoClas
         }
         return STATUS_SUCCESS;
     }
-    /* CUI-6 (sem_ps/proc_classes): the stored priority class — an explicit
-     * case BEFORE the accept-as-no-op default arm, so this class can never
-     * again "succeed" silently without effect (Art. 12). Size exact, the
+    /* CUI-6 (sem_ps/proc_classes): the stored priority class, so this class
+     * never "succeeds" silently without effect (Art. 12). Size exact, the
      * oracle's own refusal status (dlls/ntdll/unix/process.c). Store and
      * report only: one CPU, one priority band that matters (docs/03). */
     if (infoClass == ProcessPriorityClass)
@@ -1119,13 +1117,17 @@ NTSTATUS NtSetInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoClas
         }
         return status;
     }
-    /* The classes ntdll sets at startup (fault policy etc.) have no
-     * observable effect here; accept them — but by NAME on serial, so a
-     * class whose effect matters cannot hide (Art. 12 hygiene; the pattern
-     * that caught ProcessWineMakeProcessSystem and the hard-error mode
-     * above). */
-    DbgPrint("ps: NtSetInformationProcess class %u accepted as a no-op\n", (unsigned)infoClass);
-    return STATUS_SUCCESS;
+    /* Every other class is UNBUILT, and says so (Art. 12). This arm used to
+     * accept the rest as a no-op and answer STATUS_SUCCESS, naming the class
+     * on serial — and that serial line is how four classes were caught
+     * fabricating an answer (ProcessWineMakeProcessSystem's NULL event,
+     * ProcessManageWritesToExecutableMemory's "yes, ARM64EC",
+     * ProcessThreadStackAllocation's uninitialised StackBase, the dropped
+     * hard-error mode). A success the kernel did not earn is the planted-bug
+     * shape G12 forbids; a class a real caller needs gets an explicit arm
+     * above, pinned first, like the ones that are there. */
+    DbgPrint("NtSetInformationProcess: unbuilt info class %d\n", (int)infoClass);
+    return STATUS_NOT_IMPLEMENTED;
 }
 
 /* --- system information --------------------------------------------------- */
