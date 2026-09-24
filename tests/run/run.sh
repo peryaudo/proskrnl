@@ -3795,6 +3795,103 @@ usbinput() {
     return 0
 }
 
+# LIVE-1 (docs/02): the product stick -- `make liveusb`, the image a human
+# dd's onto a USB drive (docs/liveusb.md) -- booted the way a real box boots
+# it. It is a usb-storage device on a qemu-xhci and nothing else: no
+# virtio-blk, and no virtio device of any kind (BOOT_MEDIUM=usb,
+# tools/qemu.sh). The firmware reads the stick through its OWN USB stack,
+# Limine loads the system disk off it as the `memdisk` module, and the
+# kernel mounts that RAM copy as C: (drivers/memdisk.h) -- the one thing
+# this leg convicts that no other does. The session is `make rungui`'s with
+# the console on the serial wire instead of explorer (GUEST_SERIAL=1), so
+# liveusb_expect.py can type at it: a write to C: read back through a
+# transform only the guest applies, the applet shelf listed and two applets
+# started onto the desktop, then `exit` -- ACPI S5, QEMU exiting 0 on its
+# own. Afterwards the stick must be byte-identical to what was booted:
+# every write went to RAM. The stick is a copy, only so a failing kernel
+# cannot damage the build output; nothing is expected to write it.
+#
+# The boot is VIRGIN on purpose -- a live system disk has never run, and
+# every live boot pays firstboot, because nothing a boot writes survives
+# it. FIRMWARE picks the boot path: liveusb is SeaBIOS (Limine's BIOS stage
+# reading the stick through the BIOS's xHCI + USB-MSC), liveusbuefi is
+# QEMU's edk2 (Limine's BOOTX64.EFI through UEFI's USB stack) -- a dev box
+# is likelier to be the second.
+liveusb_boot() {   # $1 = leg name, $2 = FIRMWARE (bios|uefi)
+    local leg="$1" firmware="$2"
+    make -C "$ROOT" liveusb >&2 || exit 1
+    local dir="$ROOT/build/tests"
+    local stick="$dir/$leg.img" sock="$dir/$leg.sock" log="$dir/$leg.log"
+    mkdir -p "$dir"
+    rm -f "$sock" "$log" "$log.status"
+    cp "$ROOT/build/proskrnl-liveusb.img" "$stick" \
+        || { echo "== $leg: FAIL (cannot copy the stick) =="; return 1; }
+    local before after
+    before=$(sha256sum < "$stick")
+
+    SERIAL_SOCK="$sock" LOG="$log" BOOT_MEDIUM=usb FIRMWARE="$firmware" \
+        MEM="${MEM:-1536M}" TIMEOUT="${TIMEOUT:-1800}" \
+        GUEST_INTERACTIVE=1 GUEST_SERIAL=1 \
+        "$ROOT/tools/qemu.sh" "$stick" >/dev/null 2>&1 &
+    local qemu_wrapper=$!
+    local expect_ok=1
+    EXPECT_DEADLINE="${EXPECT_DEADLINE:-1500}" \
+        python3 "$ROOT/tests/run/liveusb_expect.py" "$sock" "$log" || expect_ok=0
+    if [[ "$expect_ok" != 1 ]]; then
+        # A session that stopped short never typed `exit`; stop the machine
+        # here rather than on qemu.sh's TIMEOUT (its QMP socket's default).
+        python3 "$ROOT/tests/gui/qmpctl.py" "$log.qmp" quit >/dev/null 2>&1 || true
+    fi
+    wait "$qemu_wrapper" 2>/dev/null || true
+
+    local fails=0
+    live_check() {   # $1 = what, then the command
+        local what="$1"
+        shift
+        if "$@"; then
+            echo "[KTEST] $leg $what PASS"
+        else
+            echo "[KTEST] $leg $what FAIL"
+            fails=$((fails + 1))
+        fi
+    }
+    live_check "session (write+readback, applets, exit)" test "$expect_ok" = 1
+    live_check "memdisk adopted" grep -qE '\[KTEST\] memdisk READY sectors=[0-9]+' "$log"
+    live_check "virtio-blk left down" grep -q 'io: boot disk is the memdisk; virtio-blk not probed' "$log"
+    live_check "C: mounted off the memdisk" grep -qE '^fat32: mounted at LBA [0-9]+' "$log"
+    # Every virtio driver names the device it brings up in one shape
+    # ("virtio-<kind>: <dev>:<fn> id <id>, ..."); none may appear.
+    live_check "no virtio device" bash -c "! grep -qE 'virtio-[a-z]+: [0-9a-f]{2}:[0-9a-f] id ' '$log'"
+    live_check "powered off through S5 (qemu status 0)" \
+        bash -c "grep -q '\[KTEST\] acpi poweroff S5 ' '$log' && test \"\$(cat '$log.status' 2>/dev/null)\" = 0"
+    # The shelf `make rungui` has (Makefile WINESTRIP_APPLET_EXE_NAMES +
+    # winemine), read off the system disk the stick carries -- the module
+    # itself, at its own ESP offset inside the stick's ESP.
+    local applet shelf_ok=1
+    local sysimg="$dir/$leg-system.img"
+    MTOOLS_SKIP_CHECK=1 mcopy -o -i "$stick@@2097152" ::/liveusb-system.img "$sysimg" 2>/dev/null \
+        || shelf_ok=0
+    for applet in notepad clock winver taskmgr winefile regedit wordpad winhlp32 progman \
+                  start winemine; do
+        MTOOLS_SKIP_CHECK=1 mdir -i "$sysimg@@2097152" "::/windows/system32/$applet.exe" \
+            >/dev/null 2>&1 || { echo "$leg: applet $applet.exe missing from the system disk"; shelf_ok=0; }
+    done
+    rm -f "$sysimg"
+    live_check "the rungui applet shelf on board" test "$shelf_ok" = 1
+    after=$(sha256sum < "$stick")
+    live_check "stick unwritten" test "$before" = "$after"
+    assert_contained_faults "$log" 0 "$leg" || fails=$((fails + 1))
+
+    if [[ "$fails" -ne 0 ]]; then
+        echo "== $leg: FAIL ($fails; see $log) =="
+        return 1
+    fi
+    echo "== $leg: PASS (USB stick -> $firmware -> memdisk C:, writes in RAM, applets up, stick untouched) =="
+    return 0
+}
+liveusb() { liveusb_boot liveusb bios; }
+liveusbuefi() { liveusb_boot liveusbuefi uefi; }
+
 # GUI-5 (docs/02 "GUI finishing"): clipboard, hooks and AttachThreadInput
 # cross-process over the unmodified pinned server, plus the guest half of
 # the font-metrics differential (the same fontdiff.exe the oracle block
@@ -4655,10 +4752,12 @@ case "$MODE" in
     gui6)     gui6 ;;
     coldinput) coldinput ;;
     usbinput) usbinput ;;
+    liveusb)  liveusb ;;
+    liveusbuefi) liveusbuefi ;;
     winefbunit) winefbunit ;;
     resolvunit) resolvunit ;;
     winetest-gui) winetest_gui ;;
-    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|acpi|cui8|cui9|net|net3|wow64|fatinterop|fatstress|tornwrite|gui|audio|wow64aud|gui2|gui3|gui4|gui5|gui5con|wow64gui|gui6|coldinput|usbinput|winefbunit|resolvunit|winetest-gui [pair...]}" >&2
+    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|acpi|cui8|cui9|net|net3|wow64|fatinterop|fatstress|tornwrite|gui|audio|wow64aud|gui2|gui3|gui4|gui5|gui5con|wow64gui|gui6|coldinput|usbinput|liveusb|liveusbuefi|winefbunit|resolvunit|winetest-gui [pair...]}" >&2
        echo "       subtest = a tests/ntapi test's base name, or a glob over base names" >&2
        echo "       pair    = a winetest <module>[:<subtest>] (ntdll, printf, ntdll:env), or a glob" >&2
        echo "                 (iteration only — the gate is the unfiltered run)" >&2
