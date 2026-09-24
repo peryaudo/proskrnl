@@ -41,12 +41,7 @@ static void expect_refused(const char *what, HANDLE processHandle, void *buffer,
 {
     NTSTATUS status =
         NtSetInformationProcess(processHandle, PS_ProcessExecuteFlags, buffer, length);
-    /* Red on proskrnl until the kernel stops accepting this class as a
-     * no-op; the next commit deletes the tag. */
-    todo_proskrnl
-    {
-        ok(status == STATUS_INVALID_PARAMETER, "%s -> %08lx", what, (unsigned long)status);
-    }
+    ok(status == STATUS_INVALID_PARAMETER, "%s -> %08lx", what, (unsigned long)status);
 }
 
 START_TEST(execute_flags)
