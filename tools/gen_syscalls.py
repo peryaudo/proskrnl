@@ -509,6 +509,7 @@ TORTURE_PARKED = {
 # convicted belongs here — the panic IS the evidence.
 CLASS_OVERRIDE = {
     ("NtSetInformationThread", 1): (2, "ThreadPriority"),
+    ("NtSetInformationProcess", 1): (12, "ProcessDefaultHardErrorMode"),
     ("NtSetInformationObject", 1): (4, "ObjectHandleFlagInformation"),
     ("NtSetInformationJobObject", 1): (2, "JobObjectBasicLimitInformation"),
     ("NtSetInformationToken", 1): (6, "TokenDefaultDacl"),
