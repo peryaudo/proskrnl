@@ -17,6 +17,16 @@ extern uint64_t KiLastSystemCall;
  * stack's RBP chain) may legitimately cross poisoned pool bytes. */
 extern int KiPanicInProgress;
 
+/* Nonzero on a boot whose human reads the SCREEN, not serial (the
+ * interactive desktop boot: kernel/init/main.c KiConfigurePanicOnScreen).
+ * A fatal dump there takes the framebuffer back from the GUI and draws itself
+ * on the boot console, ends with a recap of its headline (the thread dump
+ * scrolls the top of it off the screen), and the machine then stops in a
+ * halt loop instead of exiting QEMU — an exit would close the window the dump
+ * was drawn in. Serial carries every line either way. Zero (the default, and
+ * every scripted boot) keeps the isa-debug-exit stop the harness waits on. */
+extern int KiPanicOnScreen;
+
 __attribute__((noreturn)) void KiPanic(const char *message);
 __attribute__((noreturn)) void KiAssertFail(const char *expression, const char *file, int line);
 

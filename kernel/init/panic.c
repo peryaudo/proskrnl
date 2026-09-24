@@ -6,6 +6,7 @@
  * UBSan traps (#UD) both land here.
  */
 #include "kernel/init/panic.h"
+#include "kernel/init/bootvid.h"
 #include "kernel/init/profile.h"
 #include "kernel/init/trace.h"
 #include "kernel/lib/dbgprint.h"
@@ -101,8 +102,74 @@ static void KiDumpStackTrace(uint64_t rbp)
     }
 }
 
+int KiPanicOnScreen;
+
+/* What the dump's headline was, kept so the screen recap can say it again. */
+static PKTRAP_FRAME KiPanicTrapFrame;
+static const char *KiPanicMessage;
+static const char *KiPanicAssertFile;
+static int KiPanicAssertLine;
+static uint64_t KiPanicRbp;
+static int KiPanicRecapped;
+
+static int KiLooksLikeKernelPointer(const void *pointer);
+
+/* The last lines on the screen are the ones a human reads first, and by then
+ * the all-threads dump has scrolled the headline off it: say it again, short.
+ * On serial it is a repeat under its own tag, and only on a screen boot. */
+static void KiPanicRecap(void)
+{
+    DbgPrint("[PANIC] recap (full dump above; serial carries every line):\n");
+    if (KiPanicTrapFrame != 0)
+    {
+        KiDumpTrapFrame("[PANIC] recap", KiPanicTrapFrame);
+    }
+    else if (KiPanicAssertFile != 0)
+    {
+        DbgPrint("[PANIC] recap: assertion %s:%d: %s\n", KiPanicAssertFile, KiPanicAssertLine,
+                 KiPanicMessage);
+    }
+    else if (KiPanicMessage != 0)
+    {
+        DbgPrint("[PANIC] recap: %s\n", KiPanicMessage);
+    }
+    PKTHREAD thread = KiCurrentThread;
+    if (thread != 0 && KiLooksLikeKernelPointer(thread) &&
+        KiLooksLikeKernelPointer(thread->process))
+    {
+        const char *imageName = thread->process->imageName;
+        DbgPrint("  process image='%s'\n",
+                 imageName != 0 && KiLooksLikeKernelPointer(imageName) ? imageName : "?");
+    }
+    if (KiLastSystemCall != ~(uint64_t)0)
+    {
+        DbgPrint("  last_syscall=%#lx (%s)\n", KiLastSystemCall,
+                 KiSystemCallName(KiLastSystemCall));
+    }
+    KiDumpStackTrace(KiPanicRbp);
+}
+
 __attribute__((noreturn)) static void KiHalt(void)
 {
+    if (KiPanicOnScreen)
+    {
+        /* Latched separately from KiPanicInProgress: a fault inside the recap
+         * re-enters through the recursion latch, which lands here again and
+         * must go straight to the halt loop. */
+        if (!KiPanicRecapped)
+        {
+            KiPanicRecapped = 1;
+            KiPanicRecap();
+        }
+        DbgPrint("[PANIC] machine stopped; power it off to restart\n");
+        /* Interrupts off: the clock tick would otherwise keep running the
+         * dispatcher of a kernel already known to be broken, and a second
+         * fault would only scroll the dump off the screen. */
+        for (;;)
+        {
+            __asm__ volatile("cli; hlt");
+        }
+    }
     KiQemuExit(1);
     for (;;)
     {
@@ -124,6 +191,12 @@ static void KiPanicLatch(void)
         KiHalt();
     }
     KiPanicInProgress = 1;
+    /* From here on the dump is the only thing the machine does, so the
+     * screen can be taken back before its first line. */
+    if (KiPanicOnScreen)
+    {
+        KiBootVideoReactivate();
+    }
 }
 
 /* The dump runs when kernel state may already be smashed (a stack overflow
@@ -456,6 +529,8 @@ void KiDispatchTrap(PKTRAP_FRAME trapFrame)
     if (trapFrame->vector == 2)
     {
         KiPanicLatch();
+        KiPanicTrapFrame = trapFrame;
+        KiPanicRbp = trapFrame->rbp;
         KiDumpTrapFrame("[PANIC] NMI debug dump", trapFrame);
         KiDumpStackTrace(trapFrame->rbp);
         KiDumpSystemState();
@@ -530,6 +605,8 @@ void KiDispatchTrap(PKTRAP_FRAME trapFrame)
     }
 
     KiPanicLatch();
+    KiPanicTrapFrame = trapFrame;
+    KiPanicRbp = trapFrame->rbp;
     KiDumpTrapFrame("[PANIC]", trapFrame);
     KiDumpStackTrace(trapFrame->rbp);
     KiDumpSystemState();
@@ -548,8 +625,10 @@ void KiDispatchTrap(PKTRAP_FRAME trapFrame)
 __attribute__((noreturn)) void KiPanic(const char *message)
 {
     KiPanicLatch();
+    KiPanicMessage = message;
+    KiPanicRbp = (uint64_t)(uintptr_t)__builtin_frame_address(0);
     DbgPrint("[PANIC] %s\n", message);
-    KiDumpStackTrace((uint64_t)(uintptr_t)__builtin_frame_address(0));
+    KiDumpStackTrace(KiPanicRbp);
     KiDumpSystemState();
     KiDumpAllThreads();
     KiHalt();
@@ -558,8 +637,12 @@ __attribute__((noreturn)) void KiPanic(const char *message)
 __attribute__((noreturn)) void KiAssertFail(const char *expression, const char *file, int line)
 {
     KiPanicLatch();
+    KiPanicMessage = expression;
+    KiPanicAssertFile = file;
+    KiPanicAssertLine = line;
+    KiPanicRbp = (uint64_t)(uintptr_t)__builtin_frame_address(0);
     DbgPrint("[ASSERT] %s:%d: %s\n", file, line, expression);
-    KiDumpStackTrace((uint64_t)(uintptr_t)__builtin_frame_address(0));
+    KiDumpStackTrace(KiPanicRbp);
     KiDumpSystemState();
     KiDumpAllThreads();
     DbgPrint("[PANIC] assertion failed; halting\n");

@@ -166,6 +166,26 @@ void KiBootVideoShutdown(void)
 
     /* Deliberately not flanterm_deinit: the static pool cannot be returned
      * anyway, and leaving the context intact means a later panic finds no
-     * freed state. It is inert either way — KiBootVideoPutChar is now a
-     * no-op, and nothing else in the kernel touches those pixels again. */
+     * freed state — KiBootVideoReactivate below depends on it. Until then it
+     * is inert: KiBootVideoPutChar is a no-op. */
+}
+
+/* NT's bugcheck path does the same thing — it takes the display back from
+ * the display driver and paints the stop screen through bootvid — and for the
+ * same reason: a machine with no debugger attached has nowhere else to say
+ * why it died. The hand-off at FbInitialize is undone only here, on the one
+ * path after which no ring-3 code (the framebuffer's other owner) runs again
+ * (Art. 11 holds: the GUI and the console are never both drawing). */
+void KiBootVideoReactivate(void)
+{
+    if (KiBootVideoTerminal == 0 || KiBootVideoActive)
+    {
+        return;
+    }
+    /* The terminal's grid still describes the boot log, but the pixels are
+     * whatever the GUI last blitted; clear the grid, then repaint every pixel
+     * rather than only the cells the terminal believes changed. */
+    flanterm_clear(KiBootVideoTerminal, true);
+    flanterm_full_refresh(KiBootVideoTerminal);
+    KiBootVideoActive = 1;
 }

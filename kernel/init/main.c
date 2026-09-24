@@ -312,6 +312,26 @@ static BOOLEAN KiIsInteractiveBoot(void)
     return CmQueryQemuBootFlag(WSTR("Interactive"), 1) != 0;
 }
 
+/* Where a fatal dump goes on the interactive boot (kernel/init/panic.h
+ * KiPanicOnScreen). On the desktop boot whose session is the shell — `Gui`
+ * on, `Serial` off, the same pair smss reads to decide explorer owns the
+ * desktop (user/smss/smss.c SmssIsShellBoot) — the human is reading the
+ * screen, and the GUI has had the framebuffer since FbInitialize: a panic
+ * that exits QEMU closes the only window it could have been read in. There
+ * the dump takes the screen back and the machine stops in place. Every other
+ * boot (a serial session, `make run`'s terminal, every scripted leg) keeps
+ * the debug-exit stop the harness waits on. The defaults where no fw_cfg
+ * answered are smss's: that machine has a desktop and no serial reader. */
+static void KiConfigurePanicOnScreen(void)
+{
+    KiPanicOnScreen =
+        CmQueryQemuBootFlag(WSTR("Gui"), 1) != 0 && CmQueryQemuBootFlag(WSTR("Serial"), 0) == 0;
+    if (KiPanicOnScreen)
+    {
+        DbgPrint("panic: a fatal dump is drawn on the screen and the machine stops there\n");
+    }
+}
+
 /* Art. 12 dialed to fatal: arm the dispatcher's panic on any
  * STATUS_NOT_IMPLEMENTED answer (kernel/syscall/table.c) — no refusal is
  * exempt.
@@ -538,6 +558,7 @@ static void KiTestMainThread(void *context)
      * (arch/x86_64/power.c), the way a bare-metal session ends. */
     if (KiIsInteractiveBoot())
     {
+        KiConfigurePanicOnScreen();
         KiRunSessionManager(0);
         KiPowerOff();
     }
