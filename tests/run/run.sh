@@ -3648,16 +3648,37 @@ gui4() {
 # hw/usb/dev-hid.c desc_iface_tablet, subclass 0), and this driver drives
 # nothing else. The mouse rides usb_version=1 (full speed, bMaxPacketSize0
 # 8) so one boot covers a full-speed device beside the high-speed keyboard.
-usbinput() {
-    local img
-    img="$(test_image_copy "$ROOT/build/tests/usbinput.hdd")" || exit 1
+#
+# LIVE-1 splits the same drive three ways (usbinput_run): `usbinput` is the
+# USB-1 leg as it was -- both devices driven, off a virtio-blk disk -- and
+# `usbkbd` / `usbmouse` drive ONE device each on a boot with no virtio
+# device of any kind: the system disk is a memdisk loaded off a USB stick
+# (a live stick whose system disk is the warm test image, so the gui4 pair
+# is on it; live_test_stick), which is the configuration a real box running
+# the liveusb image is in. Both devices are attached on all three, as on a
+# real box; each leg asserts only its own device's half, so a keyboard
+# regression and a mouse regression are two different red legs.
+usbinput_run() {   # $1 = leg name, $2 = disk (virtio|usb), $3 = parts (both|kbd|mouse)
+    local leg="$1" medium="$2" parts="$3"
     local dir="$ROOT/build/tests"
-    local sock="$dir/usbinput.sock" log="$dir/usbinput.log"
+    local img sock="$dir/$leg.sock" log="$dir/$leg.log"
     mkdir -p "$dir"
     rm -f "$sock" "$log"
+    local medium_env=() mem="${MEM:-1536M}"
+    if [[ "$medium" == usb ]]; then
+        img="$(live_test_stick "$dir/$leg.img")" || exit 1
+        # The stick's own qemu-xhci (id xhci) carries the HID devices too.
+        medium_env=(BOOT_MEDIUM=usb EXTRA_DEVICES="usb-kbd,bus=xhci.0 usb-mouse,bus=xhci.0,usb_version=1")
+        # The memdisk is the whole warm test image, held in RAM on top of
+        # the session usbinput sizes at 1536M.
+        mem="${MEM:-2048M}"
+    else
+        img="$(test_image_copy "$dir/$leg.hdd")" || exit 1
+        medium_env=(EXTRA_DEVICES="qemu-xhci usb-kbd usb-mouse,usb_version=1")
+    fi
 
-    QMP_SOCK="$sock" LOG="$log" EXTRA_DEVICES="qemu-xhci usb-kbd usb-mouse,usb_version=1" \
-        MEM="${MEM:-1536M}" TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-USBINPUT-NEVER' \
+    env QMP_SOCK="$sock" LOG="$log" "${medium_env[@]}" \
+        MEM="$mem" TIMEOUT="${TIMEOUT:-1200}" PASS_RE='PRSK-USBINPUT-NEVER' \
         GUEST_SERIAL=1 GUEST_LEG=usbinput \
         "$ROOT/tools/qemu.sh" "$img" >/dev/null 2>&1 &
     local qemu_wrapper=$!
@@ -3687,7 +3708,7 @@ usbinput() {
     usbinput_fail() {
         python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
         wait "$qemu_wrapper" 2>/dev/null || true
-        echo "== usbinput: FAIL ($1; see $log) =="
+        echo "== $leg: FAIL ($1; see $log) =="
         return 1
     }
     qmp() { python3 "$ROOT/tests/gui/qmpctl.py" "$sock" "$@"; }
@@ -3705,6 +3726,34 @@ usbinput() {
     await '\[KTEST\] gui4 mouse READY abs=0\.\.0,0\.\.0' \
         || { usbinput_fail "no pointer reader, or the pointer claimed an abs range"; return 1; }
 
+    # The keyboard alone (usbkbd): B is the window created last, so it is
+    # the foreground window and holds the focus with nothing clicked. Every
+    # key is asserted as the exact WM_CHAR, in order: letters, digits, a
+    # space, the shift modifier (upper case and shifted punctuation -- the
+    # boot report's modifier byte), Ctrl (^A is WM_CHAR 01: the control
+    # modifier reaching TranslateMessage), Enter and Backspace.
+    if [[ "$parts" == kbd ]]; then
+        local chars_re='\[KTEST\] gui4 B char=[0-9a-f]{2}'
+        kbd_expect() {   # $1 = hex codes, space-separated, in arrival order
+            local want have
+            want=$(wc -w <<<"$1")
+            await_count "$chars_re" "$want" || return 1
+            have=$(grep -oE "$chars_re" "$log" | sed -E 's/.*char=//' | tr '\n' ' ' | sed 's/ $//')
+            [[ "$have" == "$1" ]] || { echo "usbkbd: WM_CHAR sequence '$have', expected '$1'" >&2; return 1; }
+        }
+        qmp type 'hello World-2026' || { usbinput_fail "typing failed"; return 1; }
+        kbd_expect '68 65 6c 6c 6f 20 57 6f 72 6c 64 2d 32 30 32 36' \
+            || { usbinput_fail "the typed line did not arrive key for key"; return 1; }
+        qmp type 'Q_:?"' || { usbinput_fail "typing failed"; return 1; }
+        kbd_expect '68 65 6c 6c 6f 20 57 6f 72 6c 64 2d 32 30 32 36 51 5f 3a 3f 22' \
+            || { usbinput_fail "a shifted key arrived unshifted"; return 1; }
+        qmp sendkey ctrl a && qmp sendkey ret && qmp sendkey backspace \
+            || { usbinput_fail "send-key failed"; return 1; }
+        kbd_expect '68 65 6c 6c 6f 20 57 6f 72 6c 64 2d 32 30 32 36 51 5f 3a 3f 22 01 0d 08' \
+            || { usbinput_fail "Ctrl/Enter/Backspace did not arrive"; return 1; }
+    fi
+
+    if [[ "$parts" != kbd ]]; then
     local a_line b_line
     a_line=$(grep -oE '\[KTEST\] gui4 A ready rect=[-0-9]+,[-0-9]+,[0-9]+x[0-9]+' "$log" | tail -1)
     b_line=$(grep -oE '\[KTEST\] gui4 B ready wrect=[-0-9]+,[-0-9]+,[0-9]+x[0-9]+ crect=[-0-9]+,[-0-9]+,[0-9]+x[0-9]+' "$log" | tail -1)
@@ -3763,8 +3812,10 @@ usbinput() {
     move_to "$ox" "$oy" || { usbinput_fail "pointer motion lost on the way to the overlap"; return 1; }
     qmp button left down && qmp button left up
     await '\[KTEST\] gui4 B click ' || { usbinput_fail "the overlap click never reached B"; return 1; }
-    qmp sendkey b
-    await '\[KTEST\] gui4 B char=62' || { usbinput_fail "keyboard input never reached B"; return 1; }
+    if [[ "$parts" == both ]]; then
+        qmp sendkey b
+        await '\[KTEST\] gui4 B char=62' || { usbinput_fail "keyboard input never reached B"; return 1; }
+    fi
 
     # A's exposed part: focus follows the click; a plain key and a SHIFTED
     # key (the boot report's modifier byte, usage E1h -> KEY_LEFTSHIFT).
@@ -3772,10 +3823,13 @@ usbinput() {
     qmp button left down && qmp button left up
     await '\[KTEST\] gui4 A click ' || { usbinput_fail "the exposed click never reached A"; return 1; }
     await '\[KTEST\] gui4 A active' || { usbinput_fail "the click did not activate A"; return 1; }
-    qmp sendkey a
-    await '\[KTEST\] gui4 A char=61' || { usbinput_fail "focus did not follow the click"; return 1; }
-    qmp type A
-    await '\[KTEST\] gui4 A char=41' || { usbinput_fail "the shifted key never arrived as A"; return 1; }
+    if [[ "$parts" == both ]]; then
+        qmp sendkey a
+        await '\[KTEST\] gui4 A char=61' || { usbinput_fail "focus did not follow the click"; return 1; }
+        qmp type A
+        await '\[KTEST\] gui4 A char=41' || { usbinput_fail "the shifted key never arrived as A"; return 1; }
+    fi
+    fi
 
     python3 "$ROOT/tests/gui/qmpctl.py" "$sock" quit >/dev/null 2>&1 || true
     wait "$qemu_wrapper" 2>/dev/null || true
@@ -3783,16 +3837,81 @@ usbinput() {
     # Both streams were the USB source's, and nothing virtio fed this boot.
     if ! grep -q 'hid: \\Device\\Input0 published (usb-hid boot)' "$log" ||
        ! grep -q 'hid: \\Device\\Input1 published (pointer, usb-hid boot' "$log"; then
-        echo "== usbinput: FAIL (the streams were not published over the USB source; see $log) =="
+        echo "== $leg: FAIL (the streams were not published over the USB source; see $log) =="
         return 1
     fi
     if grep -qE 'virtio-input: .* event buffers' "$log"; then
-        echo "== usbinput: FAIL (a virtio-input device came up on a USB-only boot; see $log) =="
+        echo "== $leg: FAIL (a virtio-input device came up on a USB-only boot; see $log) =="
         return 1
     fi
-    assert_contained_faults "$log" 0 usbinput || return 1
-    echo "== usbinput: PASS (xHCI + USB HID boot keyboard/mouse: keys, shifted key, clicks, exact relative motion) =="
+    # The live configuration: the disk was the memdisk, and no virtio
+    # device of any kind came up (every virtio driver names its device in
+    # one shape; the liveusb leg's rule).
+    if [[ "$medium" == usb ]]; then
+        if ! grep -qE '\[KTEST\] memdisk READY sectors=[0-9]+' "$log"; then
+            echo "== $leg: FAIL (the boot did not run from the memdisk; see $log) =="
+            return 1
+        fi
+        if grep -qE 'virtio-[a-z]+: [0-9a-f]{2}:[0-9a-f] id ' "$log"; then
+            echo "== $leg: FAIL (a virtio device came up on the live configuration; see $log) =="
+            return 1
+        fi
+        # The boot suite ran off the memdisk before the session: every
+        # in-kernel suite's verdict on it (M6's disk units included) must
+        # hold there too. CUI8 says SKIP -- its verdicts are about the
+        # virtio queue, which this boot has not got.
+        if grep -qE '^\[KTEST\] [A-Z0-9]+ FAIL|^\[ASSERT\] ' "$log"; then
+            echo "== $leg: FAIL (a boot-suite verdict failed on the memdisk; see $log) =="
+            grep -E '^\[KTEST\] [A-Z0-9]+ FAIL|^\[ASSERT\] ' "$log" | head -5
+            return 1
+        fi
+    fi
+    assert_contained_faults "$log" 0 "$leg" || return 1
+    case "$parts" in
+    both)  echo "== $leg: PASS (xHCI + USB HID boot keyboard/mouse: keys, shifted key, clicks, exact relative motion) ==" ;;
+    kbd)   echo "== $leg: PASS (live stick, no virtio: USB boot keyboard -- letters, digits, shift, ctrl, enter, backspace, in order) ==" ;;
+    mouse) echo "== $leg: PASS (live stick, no virtio: USB boot mouse -- exact relative motion, clicks route and activate) ==" ;;
+    esac
     return 0
+}
+usbinput() { usbinput_run usbinput virtio both; }
+usbkbd() { usbinput_run usbkbd usb kbd; }
+usbmouse() { usbinput_run usbmouse usb mouse; }
+
+# A live stick for the input legs: the liveusb image's shape (tools/
+# mkimage.sh MEDIUM_ONLY, the system disk as the `memdisk` module) with the
+# warm TEST image as its system disk, so the leg's clients are on it and no
+# firstboot is paid. The test image's OWN Limine modules (the M5/M7 clients,
+# the ABI probe -- its limine.conf's module lines) ride along beside the
+# memdisk, so the boot suite runs everything it runs off a virtio disk. Built
+# per leg, like any image copy.
+live_test_stick() {   # $1 = destination path; echoes it
+    local system="${1%.img}-system.img" moddir="${1%.img}-modules"
+    test_image_copy "$system" >/dev/null || return 1
+    make -C "$ROOT" build/proskrnl >&2 || return 1
+    rm -rf "$moddir"
+    mkdir -p "$moddir"
+    local conf="$moddir/limine.conf" specs=() path=""
+    MTOOLS_SKIP_CHECK=1 mcopy -o -i "$system@@2097152" ::/limine.conf "$conf" 2>/dev/null \
+        || { echo "live_test_stick: no limine.conf on $system" >&2; return 1; }
+    while read -r key value; do
+        case "$key" in
+        module_path:)
+            path="${value#boot():/}"
+            MTOOLS_SKIP_CHECK=1 mcopy -o -i "$system@@2097152" "::/$path" "$moddir/$path" 2>/dev/null \
+                || { echo "live_test_stick: module $path missing from $system" >&2; return 1; }
+            ;;
+        module_string:)
+            specs+=("$moddir/$path=$value")
+            ;;
+        esac
+    done < "$conf"
+    MEDIUM_ONLY=1 SIZE_MB=$(( $(wc -c < "$system") / 1048576 + 64 )) \
+        "$ROOT/tools/mkimage.sh" "$ROOT/build/proskrnl" "$1" "$system=memdisk" \
+        ${specs[@]+"${specs[@]}"} >/dev/null 2>&1 \
+        || { echo "live_test_stick: mkimage failed for $1" >&2; return 1; }
+    rm -rf "$system" "$moddir"
+    echo "$1"
 }
 
 # LIVE-1 (docs/02): the product stick -- `make liveusb`, the image a human
@@ -4752,12 +4871,14 @@ case "$MODE" in
     gui6)     gui6 ;;
     coldinput) coldinput ;;
     usbinput) usbinput ;;
+    usbkbd)   usbkbd ;;
+    usbmouse) usbmouse ;;
     liveusb)  liveusb ;;
     liveusbuefi) liveusbuefi ;;
     winefbunit) winefbunit ;;
     resolvunit) resolvunit ;;
     winetest-gui) winetest_gui ;;
-    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|acpi|cui8|cui9|net|net3|wow64|fatinterop|fatstress|tornwrite|gui|audio|wow64aud|gui2|gui3|gui4|gui5|gui5con|wow64gui|gui6|coldinput|usbinput|liveusb|liveusbuefi|winefbunit|resolvunit|winetest-gui [pair...]}" >&2
+    *) echo "usage: $0 {oracle [subtest...]|proskrnl [subtest...]|winetest [pair...]|prebuild|fuzz [fuzz.py options]|persist|firstboot|console|scm|procs|files|cui6|cui7|acpi|cui8|cui9|net|net3|wow64|fatinterop|fatstress|tornwrite|gui|audio|wow64aud|gui2|gui3|gui4|gui5|gui5con|wow64gui|gui6|coldinput|usbinput|usbkbd|usbmouse|liveusb|liveusbuefi|winefbunit|resolvunit|winetest-gui [pair...]}" >&2
        echo "       subtest = a tests/ntapi test's base name, or a glob over base names" >&2
        echo "       pair    = a winetest <module>[:<subtest>] (ntdll, printf, ntdll:env), or a glob" >&2
        echo "                 (iteration only — the gate is the unfiltered run)" >&2
