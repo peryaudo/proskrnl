@@ -170,6 +170,31 @@ local macOS Wine.
 
 ## Status
 
+**LIVE-1 live USB stick complete** — the second piece of the bare-metal
+box: `make liveusb` builds `build/proskrnl-liveusb.img`, the `make rungui`
+session (explorer as the shell, the whole applet shelf) on a stick you `dd`
+and boot on a PC, UEFI or legacy BIOS (`docs/liveusb.md`). There is no USB
+mass-storage driver: the firmware reads the stick through its own USB stack,
+Limine loads the system disk off it as one boot module, and the kernel
+mounts that RAM copy as `C:` — the **memdisk** (`drivers/memdisk.c`, behind
+`drivers/disk.c`, now the one authority for which disk the boot volume is).
+Writes land in RAM, the stick is never written, and every boot is a first
+boot (`docs/03` "LIVE-1 notes"). Convicted under QEMU with **no virtio device
+at all**: `tests/run/run.sh liveusb` (SeaBIOS) and `liveusbuefi` (edk2) boot
+the product stick as a `usb-storage` device on a `qemu-xhci`, write a file on
+`C:` and read it back, start notepad and winemine onto the desktop, power off
+through S5, and find the stick byte-identical afterwards; `usbkbd` and
+`usbmouse` drive the USB HID keyboard and mouse on the same configuration,
+one device per leg, and the whole in-kernel boot suite passes off the
+memdisk (CUI8 skips by name: its verdicts are about the virtio queue).
+`make runlive` boots the stick in QEMU the way a PC does. Couldn't be
+achieved within the milestone: nothing is exercised on real hardware yet,
+and what a real box adds is named in `docs/liveusb.md` — a hub in front of
+the keyboard, PS/2 and I2C-HID input (no driver), Secure Boot (Limine is
+unsigned), a framebuffer larger than the fixed 1280x800 desktop, and no
+real NIC or sound card. What's next: a first boot on real hardware, then
+the gaps it names (a USB hub driver is the likeliest first).
+
 **USB-1 USB HID input complete** — the first piece of the bare-metal box:
 `\Device\Input0`/`\Device\Input1` can now be fed by a USB HID
 **boot-protocol** keyboard and mouse behind an xHCI host controller
