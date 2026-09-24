@@ -210,6 +210,7 @@ built, the rest refuse.
 | `NtQuerySystemInformation` | 14: `SystemProcessInformation`, `SystemBasicInformation`, `SystemHandleInformation`, `SystemModuleInformation`, `SystemProcessorPerformanceInformation`, `SystemCpuInformation`, `SystemTimeAdjustmentInformation`, `SystemTimeOfDayInformation`, `SystemCurrentTimeZoneInformation`, `SystemDynamicTimeZoneInformation`, `SystemPerformanceInformation`, `SystemInterruptInformation`, `SystemFirmwareTableInformation`, `SystemWineVersionInformation` | `kernel/ps/query.c:1540` |
 | `NtQuerySystemInformationEx` | 1: `SystemSupportedProcessorArchitectures` | `kernel/ps/query.c:1620` |
 | `NtQueryInformationProcess` | 12 | `kernel/ps/query.c:484` |
+| `NtSetInformationProcess` | 8 (see below) | `kernel/ps/query.c` `NtSetInformationProcess` (default), and the WOW64 branch of its `ProcessExecuteFlags` arm |
 | `NtQueryInformationThread` | — | `kernel/ps/thread.c:1416` |
 | `NtSetInformationThread` | — | `kernel/ps/thread.c:1536` |
 | `NtQueryInformationToken` | — | `kernel/se/token.c:1126` |
@@ -316,43 +317,47 @@ framebuffer's ioctl default (`drivers/fb.c:167`) and the HID pointer's
 and `CTRL_BREAK_EVENT` (`kernel/ps/process.c:1128`), matching the delivery
 wineserver's `propagate_console_signal` implements.
 
-### The one inverted case — worth knowing about
+### `NtSetInformationProcess` — no longer the inverted case
 
-`NtSetInformationProcess` (`kernel/ps/query.c` `NtSetInformationProcess`) is the
-opposite shape. After six explicit classes
-(`ProcessManageWritesToExecutableMemory`, `ProcessWineMakeProcessSystem`,
-`ProcessThreadStackAllocation`, `ProcessPriorityBoost`,
-`ProcessDefaultHardErrorMode`, `ProcessPriorityClass`)
-its default **accepts as a
-no-op** and returns `STATUS_SUCCESS`, naming the class on serial. That is
-deliberate — the classes ntdll sets at startup have no observable effect here —
-but it means this service never trips the `syscall PARTIAL` line or the armed
-panic, so it reads as complete in any tally while being the one place a class
-whose effect *does* matter could pass silently. The serial line is the entire
-safety net; it is what caught `ProcessWineMakeProcessSystem` and the hard-error
-mode, both of which then became real implementations. Treat an unexplained
-`ps: NtSetInformationProcess class N accepted as a no-op` in a boot log as a
-suspect, not noise.
+`NtSetInformationProcess` (`kernel/ps/query.c` `NtSetInformationProcess`) used
+to be the opposite shape: after its explicit classes, its default **accepted as
+a no-op** and returned `STATUS_SUCCESS`, naming the class on serial
+(`ps: NtSetInformationProcess class N accepted as a no-op`). It never tripped
+the `syscall PARTIAL` line or the armed panic, so it read as complete in any
+tally while being the one place a class whose effect mattered could pass
+silently. That serial line caught four fabrications before the arm was retired:
+`ProcessWineMakeProcessSystem` (a NULL event handed to services.exe), the
+hard-error mode (dropped), `ProcessManageWritesToExecutableMemory` (83 — a
+capability probe, so the success answered "yes, ARM64EC" on x86_64; now the
+oracle's `STATUS_NOT_SUPPORTED`, pinned by
+`tests/ntapi/sem_ps/manage_exec_writes.c`) and `ProcessThreadStackAllocation`
+(41 — `RtlCreateUserStack` read back an uninitialised `StackBase`; now a real
+reservation, pinned by `tests/ntapi/sem_ps/thread_stack_alloc.c`). The lesson
+each taught was one step sharper than the last: a no-op success is a
+fabricated answer whenever the caller reads the status *or anything the call
+was supposed to write* — and Art. 12 does not wait for a fifth instance.
 
-It has now caught a third, and that one is worth naming because its cost was
-invisible in a tally: `ProcessManageWritesToExecutableMemory` (83) is a
-**capability probe**, not a setting. A caller reads its status to decide whether
-it is on an ARM64EC host, so the no-op arm's `STATUS_SUCCESS` was an answer of
-"yes" on an x86_64 machine. It is now an explicit `STATUS_NOT_SUPPORTED` — what
-the pinned oracle answers off ARM64 — with the thread-side twin
-`ThreadManageWritesToExecutableMemory` (48) beside it in `kernel/ps/thread.c`
-(pinned by `tests/ntapi/sem_ps/manage_exec_writes.c`). **A no-op is only safe for
-a class whose answer carries no information**; the moment the STATUS itself is
-the value the caller wanted, accepting is fabricating.
+**The default now refuses like every other info-class switch**
+(`NtSetInformationProcess: unbuilt info class N` + `STATUS_NOT_IMPLEMENTED`),
+so it belongs in the table above. Built arms (8):
+`ProcessWineMakeProcessSystem`, `ProcessManageWritesToExecutableMemory`,
+`ProcessExecuteFlags`, `ProcessThreadStackAllocation`, `ProcessPriorityBoost`,
+`ProcessDefaultHardErrorMode`, `ProcessPriorityClass`,
+`ProcessWineGrantAdminToken`. The two that retiring the no-op arm had to build
+first, because baked callers reached them through it:
 
-It has caught a fourth, and it is the sharpest instance yet because the status
-was never the value at all. `ProcessThreadStackAllocation` (41) is the one
-kernel call `RtlCreateUserStack` makes, and its answer is a pointer it WRITES
-into the caller's buffer — a buffer that is an uninitialised local in the
-caller (`third_party/wine` `dlls/ntdll/thread.c`). The no-op arm returned
-`STATUS_SUCCESS` over it, so ntdll committed a guard page and a stack at
-whatever was in that stack slot, and `CreateFiberEx` ran fibers on it. It is
-now a real reservation (`kernel/ps/query.c`, pinned by
-`tests/ntapi/sem_ps/thread_stack_alloc.c`). So the rule above generalises one
-step further: **a no-op is only safe for a class the caller reads NOTHING
-back from** — not merely one whose status carries no information.
+- `ProcessExecuteFlags` (34), which ntdll's `alloc_module` sets for any image
+  without `NX_COMPAT`. On a native 64-bit caller it is the oracle's
+  unconditional `STATUS_INVALID_PARAMETER` (pinned by
+  `tests/ntapi/sem_ps/execute_flags.c`). For a WOW64 caller — where the oracle
+  stores the flags and forces mappings executable — it is a **second refusal
+  site** inside the arm, unbuilt and loud.
+- `ProcessWineGrantAdminToken` (1002), explorer's desktop start: the process
+  token is replaced by a fresh admin-identity token of
+  `TokenElevationTypeDefault` (`kernel/se/token.c` `SeGrantAdminToken`, pinned
+  by `tests/ntapi/sem_se/se_grant_admin.c`).
+
+Classes Wine serves that are still unbuilt here: `ProcessAccessToken` (ntdll's
+`elevate_token`, for a manifest asking for elevation), `ProcessAffinityMask`,
+`ProcessBasePriority`, `ProcessInstrumentationCallback`,
+`ProcessPowerThrottlingState`.

@@ -1399,10 +1399,23 @@ What the SCM bring-up pinned, deviated on, or left unbuilt:
 - **`ProcessWineMakeProcessSystem` is real** (`kernel/ps/query.c`): the
   global shutdown event exists and its user-process count is maintained,
   but on-target it realistically never signals (conhost and cmd live for
-  the whole session). The remaining `NtSetInformationProcess` classes stay
-  accepted no-ops — now NAMED on serial per call (Art. 12 hygiene; this
-  class was the planted-bug shape that rule exists for). **One class has
-  since left that group for the opposite reason**:
+  the whole session). The remaining `NtSetInformationProcess` classes
+  were accepted no-ops NAMED on serial per call (this class was the
+  planted-bug shape that rule exists for); **that default arm is retired**
+  — every class without an explicit arm now refuses with
+  `STATUS_NOT_IMPLEMENTED` like any other info-class switch (Art. 12;
+  `docs/16` "`NtSetInformationProcess` — no longer the inverted case"). The
+  two classes baked callers still reached through it became real:
+  `ProcessExecuteFlags` (34) is the oracle's unconditional
+  `STATUS_INVALID_PARAMETER` for a native 64-bit caller (ntdll's
+  `alloc_module` sets it for a non-`NX_COMPAT` image; pinned by
+  `sem_ps/execute_flags.c`; the WOW64 arm, which stores the flags and
+  forces mappings executable, is unbuilt), and `ProcessWineGrantAdminToken`
+  (1002, explorer's desktop start) replaces the process token with a fresh
+  admin-identity token of `TokenElevationTypeDefault` through the boot
+  mint's own code path (`kernel/se/token.c` `SeGrantAdminToken`; pinned by
+  `sem_se/se_grant_admin.c`). **One class had
+  earlier left that group for the opposite reason**:
   `ProcessManageWritesToExecutableMemory` (83) and its thread twin
   `ThreadManageWritesToExecutableMemory` (48) answer
   `STATUS_NOT_SUPPORTED`, because the status IS the value — a caller sets
