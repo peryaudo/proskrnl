@@ -5143,6 +5143,58 @@ full speed, so one boot covers both speeds' EP0 sizes; the full-speed device's
 `bMaxPacketSize0` is the default 8, so the Evaluate Context path that would correct a
 different one is written but unexercised under QEMU, and is said to be.
 
+## LIVE-1 notes (the memdisk: `C:` held in RAM)
+
+**What it is, in NT's terms.** A live medium's system disk is a RAM disk the loader filled
+— Windows PE's model, where the boot manager reads a WIM into memory and `ramdisk.sys`
+serves it as `X:`. Nothing about it is NT-absent, and nothing crosses the boundary: the
+volume is still `\Device\HarddiskVolume1` behind `\??\C:`, still FAT32, still mounted by
+`fs/fat32` exactly as a virtio-blk disk is (`FatFindDataPartition` walks the GPT *inside*
+the image), and every file semantic above it is unchanged. The one user-observable fact
+is persistence: **nothing a session writes survives power-off**, which is the medium's
+contract rather than a deviation — the stick is never written. Each live boot is
+therefore a first boot (smss's firstboot runs `wineboot --init` every time).
+
+**How the bytes arrive, and why no USB storage driver.** The stick's ESP carries the
+system disk as one file, which Limine loads as the boot module tagged `memdisk`
+(`tools/mkimage.sh` `MEDIUM_ONLY`, `make liveusb`). The firmware reads it through its
+own USB stack (BIOS or UEFI), so the kernel never has to: `kernel/init/main.c`
+`KiAdoptMemdisk` hands the module — physically contiguous, typed
+`EXECUTABLE_AND_MODULES` in the memory map, so never given to the frame allocator and
+mapped by the HHDM like every region — to `drivers/memdisk.c`. A boot with more than one
+such module panics rather than choose.
+
+**One authority for "which disk".** `drivers/disk.c` is the only place that decides
+whether the boot disk is the memdisk or virtio-blk (Art. 11); the mount, the file
+system's sector traffic and `IoMountBootVolume`'s presence check all ask it. A memdisk,
+when present, wins, and virtio-blk is then **not probed at all**
+(`IoInitializeTransport` says so on serial) — a boot that brought its own disk has said
+which disk it runs from, and a second candidate would be a choice made by probe order.
+
+**Synchronous, by construction rather than by Art. 3.** A memdisk transfer is a
+`memcpy` that has finished before it could be queued, so `DiskIsQueued` answers FALSE
+and `fs/fat32/file.c`'s batch path completes each run inline instead of staging it for
+`VioBlkSubmitBatch` — the docs/19 §1 inline-completion case. Nothing parks on the
+memdisk, so the blocking frontier (G14) is unchanged. The completion drain
+(`IoDrainDeviceCompletions`) keeps its virtio-blk arm only; there is nothing to harvest.
+For the same reason the CUI-8 kmt suite — every verdict of which is about a transfer in
+flight on the virtio queue — prints `[KTEST] CUI8 SKIP` on a memdisk boot instead of a
+vacuous PASS; every other boot suite, M6's disk units included (`tests/kmt/m6_blk.c` now
+drives `drivers/disk.h`), runs and passes off the memdisk.
+
+**Sizing.** The system disk costs its whole size in RAM for the life of the boot (256 MiB
+for `make liveusb`, `LIVE_SYSTEM_MB`), on top of the session — no eviction (Art. 3)
+applies to it as to everything else. The free space inside it is the session's write
+budget.
+
+**The G5 adaptation.** No oracle boots from a stick, so the conviction is end to end under
+QEMU with no virtio device at all (`BOOT_MEDIUM=usb`: a `usb-storage` device on a
+`qemu-xhci`): `tests/run/run.sh liveusb` (SeaBIOS) and `liveusbuefi` (edk2) boot the
+product stick, write a file on `C:` through a transform only the guest applies and read
+it back, start two applets onto the desktop, power off through S5, and then require the
+stick to be byte-identical to what was booted. `usbkbd` / `usbmouse` run USB-1's input
+drive on the same configuration, one device each.
+
 ## GUI-5 notes
 
 What "GUI finishing" (docs/02) actually landed, and the shortcuts/residuals it created or

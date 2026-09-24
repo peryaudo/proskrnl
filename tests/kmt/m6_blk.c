@@ -1,12 +1,15 @@
-/* tests/kmt/m6_blk.c — virtio-blk driver units, folded into the M6 suite
- * (tests/kmt/m6_io.c kmt_run_m6).
+/* tests/kmt/m6_blk.c — boot-disk driver units, folded into the M6 suite
+ * (tests/kmt/m6_io.c kmt_run_m6), driven through drivers/disk.h so the same
+ * contract convicts whichever driver the boot disk is: virtio-blk on every
+ * leg's disk, the memdisk on a live stick (LIVE-1 -- a whole GPT disk too,
+ * so the layout below holds for it unchanged).
  *
- * The driver bounces every transfer through one page and splits multi-sector
- * calls into 8-sector requests (drivers/virtio/blk.c VioBlkTransfer), so the
- * boundaries worth crossing are multiples of 8. Write tests use a scratch
- * region in the unpartitioned GPT slack — see the layout note below — and a
- * pattern that is a function of the ABSOLUTE LBA, so a chunk sequenced to
- * the wrong sector is caught, not masked.
+ * The virtio driver bounces every transfer through one page and splits
+ * multi-sector calls into 8-sector requests (drivers/virtio/blk.c
+ * VioBlkTransfer), so the boundaries worth crossing are multiples of 8.
+ * Write tests use a scratch region in the unpartitioned GPT slack — see the
+ * layout note below — and a pattern that is a function of the ABSOLUTE LBA,
+ * so a chunk sequenced to the wrong sector is caught, not masked.
  *
  * A driver-level write-verify knob was considered and rejected: a readback
  * through the same bounce frame verifies the device echo, not the address —
@@ -14,7 +17,7 @@
  * checks in test_blk_write_read_verify convict that class instead.
  */
 #include "tests/kmt/kmt.h"
-#include "drivers/virtio/blk.h"
+#include "drivers/disk.h"
 #include "kernel/mm/pool.h"
 #include "kernel/mm/phys.h"
 #include "kernel/lib/string.h"
@@ -80,7 +83,7 @@ static void test_blk_scratch_guard(void)
 {
     unsigned char sector[SECTOR];
     blk_scratch_ok = 0;
-    ok(VioBlkReadSectors(1, 1, sector) == STATUS_SUCCESS, "read GPT header");
+    ok(DiskReadSectors(1, 1, sector) == STATUS_SUCCESS, "read GPT header");
     if (memcmp(sector, "EFI PART", 8) != 0)
     {
         ok(0, "no GPT header signature");
@@ -89,8 +92,8 @@ static void test_blk_scratch_guard(void)
     /* AlternateLBA (offset 32) is the backup header at the last sector —
      * a free cross-check of the device capacity (UEFI 2.10 Table 5.5). */
     uint64_t alternate = read64(sector + 32);
-    ok(alternate == VioBlkSectorCount() - 1, "backup header LBA %lu vs capacity %lu",
-       (unsigned long)alternate, (unsigned long)VioBlkSectorCount());
+    ok(alternate == DiskSectorCount() - 1, "backup header LBA %lu vs capacity %lu",
+       (unsigned long)alternate, (unsigned long)DiskSectorCount());
     uint64_t entryArrayLba = read64(sector + 72);
     uint32_t entryCount, entrySize;
     memcpy(&entryCount, sector + 80, 4);
@@ -104,7 +107,7 @@ static void test_blk_scratch_guard(void)
     for (uint32_t index = 0; index < entryCount; index++)
     {
         if (index % perSector == 0 &&
-            VioBlkReadSectors(entryArrayLba + index / perSector, 1, entries) != STATUS_SUCCESS)
+            DiskReadSectors(entryArrayLba + index / perSector, 1, entries) != STATUS_SUCCESS)
         {
             ok(0, "read GPT entries");
             return;
@@ -127,38 +130,37 @@ static void test_blk_scratch_guard(void)
 static void test_blk_last_sector(void)
 {
     unsigned char sector[2 * SECTOR];
-    uint64_t last = VioBlkSectorCount() - 1;
+    uint64_t last = DiskSectorCount() - 1;
     /* The backup GPT header sits AT the last LBA (UEFI 2.10 §5.3.2). */
-    ok(VioBlkReadSectors(last, 1, sector) == STATUS_SUCCESS, "read last sector");
+    ok(DiskReadSectors(last, 1, sector) == STATUS_SUCCESS, "read last sector");
     ok(memcmp(sector, "EFI PART", 8) == 0, "backup GPT header signature at the last LBA");
     /* A 2-sector read ending exactly at the capacity boundary. */
     memset(sector, 0, sizeof(sector));
-    ok(VioBlkReadSectors(last - 1, 2, sector) == STATUS_SUCCESS, "read spanning to the end");
+    ok(DiskReadSectors(last - 1, 2, sector) == STATUS_SUCCESS, "read spanning to the end");
     ok(memcmp(sector + SECTOR, "EFI PART", 8) == 0, "second sector is the backup header");
 }
 
 static void test_blk_out_of_range(void)
 {
-    uint64_t cap = VioBlkSectorCount();
+    uint64_t cap = DiskSectorCount();
     unsigned char *buffer = MiAllocatePool(9 * SECTOR);
     unsigned char reference[8 * SECTOR];
     ok(buffer != 0, "pool");
     if (buffer == 0)
         return;
 
-    ok(VioBlkReadSectors(cap, 1, buffer) == STATUS_IO_DEVICE_ERROR, "read at capacity");
-    ok(VioBlkReadSectors(cap - 1, 2, buffer) == STATUS_IO_DEVICE_ERROR,
-       "read spanning past the end");
-    ok(VioBlkWriteSectors(cap, 1, buffer) == STATUS_IO_DEVICE_ERROR, "write at capacity");
+    ok(DiskReadSectors(cap, 1, buffer) == STATUS_IO_DEVICE_ERROR, "read at capacity");
+    ok(DiskReadSectors(cap - 1, 2, buffer) == STATUS_IO_DEVICE_ERROR, "read spanning past the end");
+    ok(DiskWriteSectors(cap, 1, buffer) == STATUS_IO_DEVICE_ERROR, "write at capacity");
 
     /* A multi-chunk transfer failing on the SECOND chunk: the in-range
      * prefix IS transferred before the failure (the chunked loop's
      * documented contract — the caller sees an error but a modified
      * buffer prefix). */
     memset(buffer, 0xCC, 9 * SECTOR);
-    ok(VioBlkReadSectors(cap - 8, 9, buffer) == STATUS_IO_DEVICE_ERROR,
+    ok(DiskReadSectors(cap - 8, 9, buffer) == STATUS_IO_DEVICE_ERROR,
        "9-sector read starting 8 short of the end");
-    ok(VioBlkReadSectors(cap - 8, 8, reference) == STATUS_SUCCESS, "reference read");
+    ok(DiskReadSectors(cap - 8, 8, reference) == STATUS_SUCCESS, "reference read");
     ok(memcmp(buffer, reference, 8 * SECTOR) == 0, "in-range prefix was transferred");
     int poisoned = 1;
     for (uint32_t i = 8 * SECTOR; i < 9 * SECTOR; i++)
@@ -171,7 +173,7 @@ static void test_blk_out_of_range(void)
      * which range-checks and fails it with VIRTIO_BLK_S_IOERR — the only
      * reachable exercise of the status-byte error path (pinned QEMU
      * hw/block/virtio-blk.c virtio_blk_sect_range_ok). */
-    ok(VioBlkReadSectors(~0ULL, 2, buffer) == STATUS_IO_DEVICE_ERROR,
+    ok(DiskReadSectors(~0ULL, 2, buffer) == STATUS_IO_DEVICE_ERROR,
        "read at UINT64_MAX exercises the device IOERR path");
 
     MiFreePool(buffer);
@@ -196,20 +198,20 @@ static void test_blk_chunk_boundaries(void)
     {
         uint32_t count = sizes[c];
         blk_fill(buffer, base, count, 1);
-        ok(VioBlkWriteSectors(base, count, buffer) == STATUS_SUCCESS, "write %u at %lu", count,
+        ok(DiskWriteSectors(base, count, buffer) == STATUS_SUCCESS, "write %u at %lu", count,
            (unsigned long)base);
 
         /* Readback as one call. */
         memset(buffer, 0, (uint64_t)count * SECTOR);
-        ok(VioBlkReadSectors(base, count, buffer) == STATUS_SUCCESS, "read %u", count);
+        ok(DiskReadSectors(base, count, buffer) == STATUS_SUCCESS, "read %u", count);
         ok(blk_verify(buffer, base, count, 1) == -1, "%u-sector readback mismatch", count);
 
         /* Readback split at a different seam (first sector, then the rest). */
         if (count > 1)
         {
             memset(buffer, 0, (uint64_t)count * SECTOR);
-            ok(VioBlkReadSectors(base, 1, buffer) == STATUS_SUCCESS, "split read head");
-            ok(VioBlkReadSectors(base + 1, count - 1, buffer + SECTOR) == STATUS_SUCCESS,
+            ok(DiskReadSectors(base, 1, buffer) == STATUS_SUCCESS, "split read head");
+            ok(DiskReadSectors(base + 1, count - 1, buffer + SECTOR) == STATUS_SUCCESS,
                "split read tail");
             ok(blk_verify(buffer, base, count, 1) == -1, "%u-sector split readback mismatch",
                count);
@@ -240,24 +242,24 @@ static void test_blk_write_read_verify(void)
         return;
 
     blk_fill(buffer, base, REGION, 1);
-    ok(VioBlkWriteSectors(base, REGION, buffer) == STATUS_SUCCESS, "write region");
+    ok(DiskWriteSectors(base, REGION, buffer) == STATUS_SUCCESS, "write region");
 
     /* Sector-at-a-time readback (the FatReadSector shape). */
     int bad = 0;
     for (uint32_t s = 0; s < REGION; s++)
     {
         unsigned char one[SECTOR];
-        if (VioBlkReadSectors(base + s, 1, one) != STATUS_SUCCESS ||
+        if (DiskReadSectors(base + s, 1, one) != STATUS_SUCCESS ||
             blk_verify(one, base + s, 1, 1) != -1)
             bad++;
     }
     ok(bad == 0, "%d bad sectors in per-sector readback", bad);
 
     blk_fill(buffer, base + WINDOW_AT, WINDOW, 2);
-    ok(VioBlkWriteSectors(base + WINDOW_AT, WINDOW, buffer) == STATUS_SUCCESS, "window write");
+    ok(DiskWriteSectors(base + WINDOW_AT, WINDOW, buffer) == STATUS_SUCCESS, "window write");
 
     memset(buffer, 0, REGION * SECTOR);
-    ok(VioBlkReadSectors(base, REGION, buffer) == STATUS_SUCCESS, "read region");
+    ok(DiskReadSectors(base, REGION, buffer) == STATUS_SUCCESS, "read region");
     ok(blk_verify(buffer, base, WINDOW_AT, 1) == -1, "sectors before the window changed");
     ok(blk_verify(buffer + WINDOW_AT * SECTOR, base + WINDOW_AT, WINDOW, 2) == -1,
        "window content wrong");
@@ -282,9 +284,9 @@ static void test_blk_unaligned_buffers(void)
     unsigned char *odd = pool + 1; /* deliberately misaligned VA */
 
     blk_fill(odd, base, 9, 3);
-    ok(VioBlkWriteSectors(base, 9, odd) == STATUS_SUCCESS, "write from odd VA");
+    ok(DiskWriteSectors(base, 9, odd) == STATUS_SUCCESS, "write from odd VA");
     memset(odd, 0, 9 * SECTOR);
-    ok(VioBlkReadSectors(base, 9, odd) == STATUS_SUCCESS, "read to odd VA");
+    ok(DiskReadSectors(base, 9, odd) == STATUS_SUCCESS, "read to odd VA");
     ok(blk_verify(odd, base, 9, 3) == -1, "odd-VA readback mismatch");
     MiFreePool(pool);
 }
@@ -306,24 +308,24 @@ static void test_blk_direct_physical(void)
     unsigned char *page = MiPhysicalToVirtual(frame);
 
     blk_fill(page, base, 8, 4);
-    ok(VioBlkWriteSectorsPhysical(base, 8, frame) == STATUS_SUCCESS, "direct write");
-    ok(VioBlkReadSectors(base, 8, check) == STATUS_SUCCESS, "bounced readback");
+    ok(DiskWriteSectorsPhysical(base, 8, frame) == STATUS_SUCCESS, "direct write");
+    ok(DiskReadSectors(base, 8, check) == STATUS_SUCCESS, "bounced readback");
     ok(blk_verify(check, base, 8, 4) == -1, "direct write landed at the right LBAs");
 
     blk_fill(check, base, 8, 5);
-    ok(VioBlkWriteSectors(base, 8, check) == STATUS_SUCCESS, "bounced write");
+    ok(DiskWriteSectors(base, 8, check) == STATUS_SUCCESS, "bounced write");
     memset(page, 0, 8 * SECTOR);
-    ok(VioBlkReadSectorsPhysical(base, 8, frame) == STATUS_SUCCESS, "direct read");
+    ok(DiskReadSectorsPhysical(base, 8, frame) == STATUS_SUCCESS, "direct read");
     ok(blk_verify(page, base, 8, 5) == -1, "direct read fetched the right LBAs");
 
     /* A sub-page run at an offset inside the frame — the FatRunSectors
      * shape: cluster-interior sectors landing mid-page. */
     memset(page + SECTOR, 0, 3 * SECTOR);
-    ok(VioBlkReadSectorsPhysical(base + 1, 3, frame + SECTOR) == STATUS_SUCCESS,
+    ok(DiskReadSectorsPhysical(base + 1, 3, frame + SECTOR) == STATUS_SUCCESS,
        "direct offset read");
     ok(blk_verify(page + SECTOR, base + 1, 3, 5) == -1, "offset run landed in place");
 
-    ok(VioBlkReadSectorsPhysical(VioBlkSectorCount(), 1, frame) == STATUS_IO_DEVICE_ERROR,
+    ok(DiskReadSectorsPhysical(DiskSectorCount(), 1, frame) == STATUS_IO_DEVICE_ERROR,
        "direct read at capacity refused");
     MiFreePage(frame);
 }

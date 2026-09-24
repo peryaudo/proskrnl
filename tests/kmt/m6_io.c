@@ -14,7 +14,7 @@
 #include "kernel/mm/pool.h"
 #include "kernel/lib/rtl.h"
 #include "kernel/lib/string.h"
-#include "drivers/virtio/blk.h"
+#include "drivers/disk.h"
 #include "fs/fat32/fat.h"
 #include "arch/x86_64/mmu.h"
 
@@ -33,20 +33,23 @@ static void init_attr(OBJECT_ATTRIBUTES *attr, UNICODE_STRING *name, const WCHAR
     attr->SecurityQualityOfService = 0;
 }
 
-static void test_virtio_blk(void)
+/* The boot disk, whichever driver serves it (drivers/disk.h): virtio-blk on
+ * every leg's disk, the memdisk on a live stick (LIVE-1). Both are whole
+ * GPT disks, so the same two sectors identify either. */
+static void test_boot_disk(void)
 {
-    ok(VioBlkIsPresent(), "no virtio-blk disk");
-    if (!VioBlkIsPresent())
+    ok(DiskIsPresent(), "no boot disk");
+    if (!DiskIsPresent())
         return;
-    ok(VioBlkSectorCount() > 2048, "capacity %lu sectors", (unsigned long)VioBlkSectorCount());
+    ok(DiskSectorCount() > 2048, "capacity %lu sectors", (unsigned long)DiskSectorCount());
 
     /* LBA 0 is the protective MBR: 0x55 at 510, 0xAA at 511 (UEFI 2.10
      * §5.2.3); LBA 1 the GPT header, "EFI PART" (§5.3.2). */
     unsigned char sector[512];
-    ok(VioBlkReadSectors(0, 1, sector) == STATUS_SUCCESS, "read LBA 0");
+    ok(DiskReadSectors(0, 1, sector) == STATUS_SUCCESS, "read LBA 0");
     ok(sector[510] == 0x55 && sector[511] == 0xAA, "protective MBR signature %02x%02x", sector[510],
        sector[511]);
-    ok(VioBlkReadSectors(1, 1, sector) == STATUS_SUCCESS, "read LBA 1");
+    ok(DiskReadSectors(1, 1, sector) == STATUS_SUCCESS, "read LBA 1");
     ok(memcmp(sector, "EFI PART", 8) == 0, "GPT header signature");
 }
 
@@ -318,9 +321,9 @@ int kmt_run_m6(void)
 {
     int before = kmt_failures;
     DbgPrint("kmt: M6 io suite\n");
-    KMT_RUN(test_virtio_blk);
+    KMT_RUN(test_boot_disk);
     KMT_RUN(test_fat_hostile_chains);
-    if (VioBlkIsPresent())
+    if (DiskIsPresent())
     {
         kmt_run_m6_blk();
         KMT_RUN(test_file_roundtrip);

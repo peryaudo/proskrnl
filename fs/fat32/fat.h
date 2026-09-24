@@ -1,4 +1,5 @@
-/* fs/fat32/fat.h — FAT32 over virtio-blk (M6, docs/02, docs/04).
+/* fs/fat32/fat.h — FAT32 over the boot disk (M6, docs/02, docs/04): virtio-blk,
+ * or since LIVE-1 the memdisk (drivers/disk.h decides which).
  *
  * On-disk format written from the Microsoft FAT specification ("Microsoft
  * FAT Specification", Aug 30 2005 — the fatgen103 successor; sections cited

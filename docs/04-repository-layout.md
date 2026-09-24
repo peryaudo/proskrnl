@@ -105,6 +105,8 @@ proskrnl/
 │   │                                #   transport both ways        ★ HACK-004
 │   ├── fb.c / fbproto.h             # GUI-1: \Device\Fb0            ★ HACK-001
 │   ├── hid.c / hidproto.h           # GUI-1: \Device\Input0         ★ HACK-002
+│   ├── disk.c                       # LIVE-1: THE boot disk — memdisk or virtio-blk, decided once
+│   ├── memdisk.c                    # LIVE-1: the system disk as a RAM copy (a live stick's module)
 │   └── usb/                         # USB-1: the bare-metal input path behind HACK-002
 │       ├── xhci.c                   # xHCI host controller: ports, slots, EP0, one interrupt IN
 │       ├── hidboot.c                # HID boot-protocol keyboard/mouse -> \Device\Input0/1
