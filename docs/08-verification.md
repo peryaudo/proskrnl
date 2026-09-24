@@ -416,7 +416,11 @@ echo "exit: $?"
   framebuffer from the second line of boot until `FbInitialize` hands the scanout to the
   GUI. Serial stays the machine channel and is written first, always: the mirror is for a
   human (or a `screendump`) watching a box with no serial wire, and it can never change
-  what a verdict grep sees.
+  what a verdict grep sees. On the interactive desktop boot (`Interactive`=1, `Gui`=1,
+  `Serial`=0 — `make rungui`) a fatal dump takes the scanout back from the GUI, ends with a
+  short recap of its headline, and the machine stops in a halt loop instead of exiting QEMU,
+  so the window it was drawn in stays open (`KiPanicOnScreen`, `kernel/init/panic.h`).
+  Every other boot keeps the isa-debug-exit stop.
 
 At M7+ the same mechanism promotes: user-mode test exes (ntapi / Wine tests) write results
 to the console → condrv → its COM1 serial backend (HACK-004, `docs/10`) → host log; the

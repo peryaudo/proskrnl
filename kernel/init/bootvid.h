@@ -52,4 +52,12 @@ void KiBootVideoPutChar(char c);
  * owner of those pixels at any instant (Art. 11). */
 void KiBootVideoShutdown(void);
 
+/* Take the scanout back for the panic dump (kernel/init/panic.c, on a boot
+ * whose human reads the screen rather than serial). Clears and redraws the
+ * whole console over whatever the GUI left there. A no-op if the console
+ * never came up or is still active. Only the panic path may call it: its
+ * owner is never scheduled again after it, so the pixels still have exactly
+ * one owner. */
+void KiBootVideoReactivate(void);
+
 #endif /* PROSKRNL_KERNEL_INIT_BOOTVID_H */
