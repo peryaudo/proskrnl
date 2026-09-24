@@ -1064,6 +1064,36 @@ NTSTATUS NtSetInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoClas
         }
         return STATUS_SUCCESS;
     }
+    if (infoClass == ProcessWineGrantAdminToken)
+    {
+        /* explorer's desktop start ("the desktop process should always have
+         * an admin token", programs/explorer/desktop.c). The unix side reads
+         * neither the buffer nor the length (dlls/ntdll/unix/process.c); the
+         * server resolves the handle for PROCESS_SET_INFORMATION and swaps
+         * the process token (server/process.c grant_process_admin_token) —
+         * Se owns the swap. Pinned by tests/ntapi/sem_se/se_grant_admin.c. */
+        PEPROCESS target = KeGetCurrentThread()->process;
+        BOOLEAN referenced = FALSE;
+        if (processHandle != NtCurrentProcess())
+        {
+            PVOID body;
+            NTSTATUS status =
+                ObReferenceObjectByHandle(processHandle, PROCESS_SET_INFORMATION, &PspProcessType,
+                                          ExGetPreviousMode(), &body, 0);
+            if (!NT_SUCCESS(status))
+            {
+                return status;
+            }
+            target = body;
+            referenced = TRUE;
+        }
+        NTSTATUS status = SeGrantAdminToken(target);
+        if (referenced)
+        {
+            ObDereferenceObject(target);
+        }
+        return status;
+    }
     /* The classes ntdll sets at startup (fault policy etc.) have no
      * observable effect here; accept them — but by NAME on serial, so a
      * class whose effect matters cannot hide (Art. 12 hygiene; the pattern
