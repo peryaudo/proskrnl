@@ -206,6 +206,71 @@ MEM="${MEM:-384M}"        # the wtest leg provisions more (no eviction - Art. 3)
 # image here is one.
 DRIVE_CACHE="cache=unsafe"
 
+# LIVE-1 (docs/02): BOOT_MEDIUM says what the image IS to the machine.
+#   virtio  (the default) a virtio-blk disk — every leg, `make run`/`rungui`.
+#   usb     a USB stick: a qemu-xhci controller with a usb-storage device on
+#           it, first in the boot order, and NO virtio-blk. This is how the
+#           liveusb image (make liveusb) is booted, the way a real box boots
+#           it: the firmware reads the stick through its own USB stack and
+#           Limine loads the system disk off it as the memdisk module; the
+#           kernel never touches the stick again (drivers/memdisk.h). The
+#           controller carries id `xhci`, so EXTRA_DEVICES may hang usb-kbd /
+#           usb-mouse on the same bus — one xHCI, as on a real box — and must
+#           not add a second qemu-xhci of its own.
+# FIRMWARE=bios|uefi picks SeaBIOS (QEMU's default) or the edk2 build QEMU
+# ships (pc-bios/edk2-x86_64-code.fd); the image boots under both (tools/
+# mkimage.sh installs Limine's BIOS stage AND EFI/BOOT/BOOTX64.EFI), and a
+# dev box is more likely the latter.
+BOOT_MEDIUM="${BOOT_MEDIUM:-virtio}"
+USB_CONTROLLER_ARGS=()
+case "$BOOT_MEDIUM" in
+virtio)
+    BOOT_DRIVE_ARGS=(-drive "file=$IMG,format=raw,if=virtio,$DRIVE_CACHE")
+    ;;
+usb)
+    if [[ -n "${WRITE_LOG:-}" || -n "${DRIVE_THROTTLE:-}" ]]; then
+        echo "qemu.sh: WRITE_LOG / DRIVE_THROTTLE describe the virtio-blk disk;" >&2
+        echo "         a BOOT_MEDIUM=usb boot has none (the kernel runs from the memdisk)." >&2
+        exit 2
+    fi
+    # The controller goes on the command line ahead of every other device
+    # (USB_CONTROLLER_ARGS below): QEMU creates devices in order, and a
+    # usb-kbd naming bus=xhci.0 must find the bus already there.
+    USB_CONTROLLER_ARGS=(-device qemu-xhci,id=xhci)
+    BOOT_DRIVE_ARGS=(-drive "if=none,id=stick,file=$IMG,format=raw,$DRIVE_CACHE"
+                     -device usb-storage,bus=xhci.0,drive=stick,bootindex=0)
+    ;;
+*)
+    echo "qemu.sh: BOOT_MEDIUM='$BOOT_MEDIUM' is not one of virtio|usb" >&2
+    exit 2
+    ;;
+esac
+FIRMWARE_ARGS=()
+case "${FIRMWARE:-bios}" in
+bios)
+    ;;
+uefi)
+    # Beside the pinned QEMU binary, else the host QEMU's data directory.
+    EDK2=""
+    for candidate in "$(dirname "$QEMU")/pc-bios/edk2-x86_64-code.fd" \
+                     /usr/share/qemu/edk2-x86_64-code.fd \
+                     /opt/homebrew/share/qemu/edk2-x86_64-code.fd \
+                     /usr/local/share/qemu/edk2-x86_64-code.fd; do
+        [[ -f "$candidate" ]] && { EDK2="$candidate"; break; }
+    done
+    if [[ -z "$EDK2" ]]; then
+        echo "qemu.sh: FIRMWARE=uefi but no edk2-x86_64-code.fd next to $QEMU" >&2
+        echo "         or in the usual QEMU data directories." >&2
+        exit 2
+    fi
+    FIRMWARE_ARGS=(-drive "if=pflash,format=raw,unit=0,readonly=on,file=$EDK2")
+    ;;
+*)
+    echo "qemu.sh: FIRMWARE='${FIRMWARE}' is not one of bios|uefi" >&2
+    exit 2
+    ;;
+esac
+
 # GUI-1 (docs/02): Limine sets a linear framebuffer through the VGA BIOS's
 # VBE, and \Device\Fb0 (drivers/fb.c) publishes whatever it was given. "std"
 # (QEMU's bochs-display VBE) is already the default VGA for the q35
@@ -408,6 +473,16 @@ if [[ -n "${INTERACTIVE:-}" ]]; then
         # Tablet, not mouse: absolute coordinates map the host pointer to
         # the guest 1:1 with no grab (and it is what the gui4 leg drives).
         INTERACTIVE_DEVICE_ARGS=(-device virtio-keyboard-pci -device virtio-tablet-pci)
+        # USB_INPUT=1 (make runlive): the bare-metal input path instead — a
+        # USB HID boot keyboard and mouse (drivers/usb/hidboot.c), on the
+        # stick's controller when there is one. A relative mouse, so the
+        # window GRABS the host pointer on the first click (the GUI
+        # backend's ungrab chord releases it — Ctrl-Alt-G on gtk).
+        if [[ -n "${USB_INPUT:-}" ]]; then
+            INTERACTIVE_DEVICE_ARGS=()
+            [[ "$BOOT_MEDIUM" == usb ]] || INTERACTIVE_DEVICE_ARGS=(-device qemu-xhci,id=xhci)
+            INTERACTIVE_DEVICE_ARGS+=(-device usb-kbd,bus=xhci.0 -device usb-mouse,bus=xhci.0)
+        fi
         GUI_BACKEND="$("$QEMU" -display help 2>/dev/null | grep -m1 -E '^(gtk|sdl|cocoa)$' || true)"
         if [[ -n "$GUI_BACKEND" ]]; then
             DISPLAY_ARGS=(-display "$GUI_BACKEND")
@@ -494,13 +569,15 @@ if [[ -n "${INTERACTIVE:-}" ]]; then
         -no-reboot \
         "${DISPLAY_ARGS[@]}" \
         "${VGA_ARGS[@]}" \
+        ${USB_CONTROLLER_ARGS[@]+"${USB_CONTROLLER_ARGS[@]}"} \
         -serial mon:stdio \
         ${INTERACTIVE_DEVICE_ARGS[@]+"${INTERACTIVE_DEVICE_ARGS[@]}"} \
         ${EXTRA_DEVICE_ARGS[@]+"${EXTRA_DEVICE_ARGS[@]}"} \
         ${AUDIODEV_ARGS[@]+"${AUDIODEV_ARGS[@]}"} \
         ${FWCFG_ARGS[@]+"${FWCFG_ARGS[@]}"} \
         -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
-        -drive file="$IMG",format=raw,if=virtio,"$DRIVE_CACHE"
+        ${FIRMWARE_ARGS[@]+"${FIRMWARE_ARGS[@]}"} \
+        "${BOOT_DRIVE_ARGS[@]}"
     exit 0
 fi
 PASS_RE="${PASS_RE:-\[KTEST\] M9 PASS}"
@@ -573,7 +650,7 @@ if [[ -n "${WRITE_LOG:-}" ]]; then
                 -blockdev "driver=blklogwrites,node-name=tw-top,file=tw-fmt,log=tw-logf,log-append=off,log-super-update-interval=1"
                 -device  "virtio-blk-pci,drive=tw-top")
 else
-    DRIVE_ARGS=(-drive "file=$IMG,format=raw,if=virtio,$DRIVE_CACHE")
+    DRIVE_ARGS=("${BOOT_DRIVE_ARGS[@]}")
 fi
 
 # CUI-8 (tests/run/run.sh cui8): DRIVE_THROTTLE=<bytes/s> caps the disk's
@@ -593,6 +670,7 @@ fi
     -no-reboot \
     -display none \
     "${VGA_ARGS[@]}" \
+    ${USB_CONTROLLER_ARGS[@]+"${USB_CONTROLLER_ARGS[@]}"} \
     "${MON_ARGS[@]}" \
     "${SERIAL_ARGS[@]}" \
     ${EXTRA_DEVICE_ARGS[@]+"${EXTRA_DEVICE_ARGS[@]}"} \
@@ -600,6 +678,7 @@ fi
     ${NET_ARGS[@]+"${NET_ARGS[@]}"} \
     ${FWCFG_ARGS[@]+"${FWCFG_ARGS[@]}"} \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+    ${FIRMWARE_ARGS[@]+"${FIRMWARE_ARGS[@]}"} \
     "${DRIVE_ARGS[@]}" &
 QPID=$!
 
