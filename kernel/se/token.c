@@ -376,9 +376,16 @@ static NTSTATUS SepFilterToken(PTOKEN source, const BYTE *disableSids, ULONG dis
     return status;
 }
 
-/* --- the boot mint ---------------------------------------------------------- */
+/* --- the admin identity ---------------------------------------------------- */
 
-void SeInitializeSecuritySubsystem(void)
+/* THE admin-identity mint (Art. 11: one site): server/token.c
+ * token_create_admin, whose identity does not depend on the elevation type —
+ * the groups, privileges and default DACL below are the same for the boot
+ * line (Limited) and for ProcessWineGrantAdminToken (Default). Always a
+ * primary token (create_token stores -1 as a primary token's impersonation
+ * level whatever it is passed), session 1 (server/process.h
+ * default_session_id). On success the caller owns one reference. */
+static NTSTATUS SepCreateAdminToken(LONG elevationType, PTOKEN *out)
 {
     /* The 8 groups, in server/token.c token_create_admin's admin_groups[]
      * order and with its exact attribute sets. Index 4 (Domain Users) is
@@ -475,14 +482,20 @@ void SeInitializeSecuritySubsystem(void)
     daclHeader->AceCount = 2;
     daclHeader->Sbz2 = 0;
 
-    /* The boot line: a primary admin token, TokenElevationTypeLimited,
-     * session 1 (server/process.c: parentless -> token_create_admin(TRUE,
-     * -1, TokenElevationTypeLimited, default_session_id);
-     * server/process.h: default_session_id = 1). */
+    return SepCreateToken(TRUE, -1, 1, elevationType, SepSidOf(&SepLocalUserSid), attrs, packedSids,
+                          packedLength, 8, privileges, 21, (const ACL *)dacl, daclLength, 0, 4,
+                          out);
+}
+
+/* --- the boot mint ---------------------------------------------------------- */
+
+void SeInitializeSecuritySubsystem(void)
+{
+    /* The boot line: a primary admin token, TokenElevationTypeLimited
+     * (server/process.c: parentless -> token_create_admin(TRUE, -1,
+     * TokenElevationTypeLimited, default_session_id)). */
     PTOKEN token;
-    NTSTATUS status = SepCreateToken(TRUE, -1, 1, TokenElevationTypeLimited,
-                                     SepSidOf(&SepLocalUserSid), attrs, packedSids, packedLength, 8,
-                                     privileges, 21, (const ACL *)dacl, daclLength, 0, 4, &token);
+    NTSTATUS status = SepCreateAdminToken(TokenElevationTypeLimited, &token);
     if (!NT_SUCCESS(status))
     {
         KiPanic("SeInitializeSecuritySubsystem: cannot mint the boot token");
@@ -538,6 +551,37 @@ void SeDeassignPrimaryToken(struct EPROCESS *process)
         ObDereferenceObject(process->token);
         process->token = 0;
     }
+}
+
+NTSTATUS SeGrantAdminToken(struct EPROCESS *process)
+{
+    /* server/process.c grant_process_admin_token: mint
+     * token_create_admin(TRUE, SecurityIdentification,
+     * TokenElevationTypeDefault, default_session_id), release the old
+     * process token, install the new one. A REPLACEMENT, not an edit — a
+     * handle opened before the grant keeps naming the old object
+     * (sem_se/se_grant_admin.c).
+     *
+     * Ownership audit (G11): the new token's one reference (the mint's)
+     * becomes EPROCESS's, exactly the reference SeAssignPrimaryToken would
+     * have given it; the old token loses EPROCESS's reference here, and
+     * lives on only while handles hold their own. Nothing between the mint
+     * and the swap can park (a pool allocation and a copy), and every
+     * SeCurrentToken() reader uses its raw pointer without parking, so no
+     * thread of this process can be holding the old pointer across the swap
+     * on this uniprocessor, non-preemptive kernel. A mint that fails leaves
+     * the old token installed and answers its status. */
+    PTOKEN token;
+    NTSTATUS status = SepCreateAdminToken(TokenElevationTypeDefault, &token);
+    if (!NT_SUCCESS(status))
+    {
+        return status;
+    }
+    ASSERT(process->token != 0);
+    PTOKEN old = (PTOKEN)process->token;
+    process->token = (struct TOKEN *)token;
+    ObDereferenceObject(old);
+    return STATUS_SUCCESS;
 }
 
 NTSTATUS SepReferenceTokenByHandle(HANDLE handle, ACCESS_MASK desiredAccess, PTOKEN *token,

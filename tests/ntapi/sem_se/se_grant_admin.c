@@ -28,9 +28,7 @@
  *   - the handle is resolved (a junk handle is STATUS_INVALID_HANDLE) and
  *     the buffer and length are never read.
  *
- * Oracle-first (G5). Nothing here is beyond_oracle. The todo_proskrnl
- * blocks are the asserts the kernel's accept-as-a-no-op arm fails today;
- * the commit that implements the grant deletes them.
+ * Oracle-first (G5). Nothing here is beyond_oracle.
  */
 #include "util.h"
 
@@ -115,10 +113,7 @@ START_TEST(se_grant_admin)
     /* --- a handle that resolves to nothing is refused, and nothing moves -- */
     status = NtSetInformationProcess((HANDLE)(ULONG_PTR)0xdeadbeef, SE_ProcessWineGrantAdminToken,
                                      NULL, 0);
-    todo_proskrnl
-    {
-        ok(status == STATUS_INVALID_HANDLE, "junk handle -> %08lx", (unsigned long)status);
-    }
+    ok(status == STATUS_INVALID_HANDLE, "junk handle -> %08lx", (unsigned long)status);
     status = NtOpenProcessToken(NtCurrentProcess(), TOKEN_QUERY, &after);
     ok(status == STATUS_SUCCESS, "open after refusal -> %08lx", (unsigned long)status);
     TOKEN_STATISTICS statsRefused = query_stats(after, "after refusal");
@@ -135,22 +130,13 @@ START_TEST(se_grant_admin)
     status = NtOpenProcessToken(NtCurrentProcess(), TOKEN_QUERY, &after);
     ok(status == STATUS_SUCCESS, "open after -> %08lx", (unsigned long)status);
     TOKEN_STATISTICS statsAfter = query_stats(after, "after");
-    todo_proskrnl
-    {
-        ok(statsAfter.TokenId.LowPart != statsBefore.TokenId.LowPart ||
-               statsAfter.TokenId.HighPart != statsBefore.TokenId.HighPart,
-           "the grant kept the old TokenId");
-    }
+    ok(statsAfter.TokenId.LowPart != statsBefore.TokenId.LowPart ||
+           statsAfter.TokenId.HighPart != statsBefore.TokenId.HighPart,
+       "the grant kept the old TokenId");
     ok(statsAfter.TokenType == TokenPrimary, "after: token type %d", (int)statsAfter.TokenType);
-    todo_proskrnl
-    {
-        ok(query_elevation_type(after, "after") == TokenElevationTypeDefault,
-           "after: elevation type is not Default");
-    }
-    todo_proskrnl
-    {
-        ok(query_is_elevated(after, "after") == 1, "after: TokenIsElevated is not 1");
-    }
+    ok(query_elevation_type(after, "after") == TokenElevationTypeDefault,
+       "after: elevation type is not Default");
+    ok(query_is_elevated(after, "after") == 1, "after: TokenIsElevated is not 1");
     ok(query_session(after, "after") == 1, "after: session is not 1");
 
     se_user_buf userAfter;
@@ -177,17 +163,11 @@ START_TEST(se_grant_admin)
     status = NtOpenProcessToken(NtCurrentProcess(), TOKEN_QUERY, &again);
     ok(status == STATUS_SUCCESS, "open again -> %08lx", (unsigned long)status);
     TOKEN_STATISTICS statsAgain = query_stats(again, "again");
-    todo_proskrnl
-    {
-        ok(statsAgain.TokenId.LowPart != statsAfter.TokenId.LowPart ||
-               statsAgain.TokenId.HighPart != statsAfter.TokenId.HighPart,
-           "the second grant kept the first grant's TokenId");
-    }
-    todo_proskrnl
-    {
-        ok(query_elevation_type(again, "again") == TokenElevationTypeDefault,
-           "again: elevation type is not Default");
-    }
+    ok(statsAgain.TokenId.LowPart != statsAfter.TokenId.LowPart ||
+           statsAgain.TokenId.HighPart != statsAfter.TokenId.HighPart,
+       "the second grant kept the first grant's TokenId");
+    ok(query_elevation_type(again, "again") == TokenElevationTypeDefault,
+       "again: elevation type is not Default");
 
     NtClose(again);
     NtClose(after);

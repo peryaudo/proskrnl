@@ -160,6 +160,12 @@ NTSTATUS SepDuplicateToken(PTOKEN source, BOOLEAN primary, LONG impersonationLev
 NTSTATUS SeAssignPrimaryToken(struct EPROCESS *process);
 void SeDeassignPrimaryToken(struct EPROCESS *process);
 
+/* ProcessWineGrantAdminToken's effect (server/process.c
+ * grant_process_admin_token): replace `process`'s primary token with a fresh
+ * admin-identity token of TokenElevationTypeDefault. The caller resolves the
+ * handle (PROCESS_SET_INFORMATION) and holds `process` across the call. */
+NTSTATUS SeGrantAdminToken(struct EPROCESS *process);
+
 /* The current thread's effective token (thread tokens do not exist in
  * CUI-2, so: the current process's token; SeBootToken without a thread). */
 PTOKEN SeCurrentToken(void);
