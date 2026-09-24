@@ -866,6 +866,31 @@ NTSTATUS NtSetInformationProcess(HANDLE processHandle, PROCESSINFOCLASS infoClas
          * ordering rather than only the happy case. */
         return STATUS_NOT_SUPPORTED;
     }
+    if (infoClass == ProcessExecuteFlags)
+    {
+        /* DEP is not a per-process choice for 64-bit code. The pinned
+         * oracle's arm opens with `if ((is_win64 && !is_wow64()) || size !=
+         * sizeof(ULONG)) return STATUS_INVALID_PARAMETER;`
+         * (third_party/wine dlls/ntdll/unix/process.c, case
+         * ProcessExecuteFlags), so on a native 64-bit process the refusal
+         * precedes the length, the buffer, the flag bits and the handle —
+         * nothing is captured and nothing is looked up. The callers are
+         * ntdll's alloc_module (an image without NX_COMPAT asks for
+         * MEM_EXECUTE_OPTION_ENABLE and ignores the status) and kernel32's
+         * SetProcessDEPPolicy. Pinned by tests/ntapi/sem_ps/execute_flags.c.
+         *
+         * The predicate is the CALLER's bitness, as the oracle's is (its
+         * handle is never read). A WOW64 caller — wow64.dll's thunk forwards
+         * the class unchanged — is the other contract: the oracle stores the
+         * flags and forces every mapping executable (virtual_set_force_exec),
+         * which proskrnl's mm does not build, so that arm refuses loudly. */
+        if (KeGetCurrentThread()->process->wow64)
+        {
+            DbgPrint("NtSetInformationProcess: unbuilt ProcessExecuteFlags for a WOW64 caller\n");
+            return STATUS_NOT_IMPLEMENTED;
+        }
+        return STATUS_INVALID_PARAMETER;
+    }
     if (infoClass == ProcessThreadStackAllocation)
     {
         /* THE ONE KERNEL CALL RtlCreateUserStack MAKES, and the accept-as-a-
