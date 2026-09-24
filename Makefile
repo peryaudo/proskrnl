@@ -4,6 +4,7 @@
 #   make test       build + boot in QEMU, check the [KTEST] verdict on serial
 #   make fulltest   every leg CI runs, fanned out over this box (tools/fulltest.sh)
 #   make run        build + boot the interactive image: cmd.exe on your terminal
+#   make liveusb    build the USB live image (build/proskrnl-liveusb.img; docs/liveusb.md)
 #   make clean
 
 # Toolchain: clang + ld.lld (README "Prerequisites"). On macOS, Homebrew's
@@ -2399,6 +2400,43 @@ $(IMG_DEV): $(KERNEL) $(WINFILES_DEPS) $(FULL_PAYLOAD) $(HELLOCRT) $(UPCASE) $(L
 dev-img: $(IMG_DEV)
 .PHONY: dev-img
 
+# LIVE-1 (docs/02): THE LIVE IMAGE -- proskrnl on a USB stick, run from RAM.
+#
+# Two disks, one inside the other:
+#   $(IMG_LIVE_SYSTEM)  the SYSTEM disk: the dev image's userland (every
+#                       applet `make rungui` has), GPT + FAT32 like any
+#                       other image, built on its own so it is never a disk
+#                       that has already been booted (`make rungui` boots
+#                       $(IMG_DEV) in place).
+#   $(IMG_LIVE)         the STICK: a boot medium whose ESP holds Limine (BIOS
+#                       and UEFI), the kernel, and the system disk as ONE
+#                       boot module tagged `memdisk`.
+# The firmware reads the stick through its own USB stack, Limine loads the
+# system disk into RAM, and the kernel mounts THAT as C: (drivers/memdisk.h)
+# -- so running from a stick needs no USB mass-storage driver, every write
+# lands in RAM, and the stick is never written. Write it with dd:
+# docs/liveusb.md.
+#
+# LIVE_SYSTEM_MB sizes the system disk, i.e. the RAM it costs and the
+# headroom for what the session writes (firstboot's hive and fake DLLs
+# first): the dev image's 256.
+IMG_LIVE_SYSTEM := $(BUILD)/liveusb-system.img
+IMG_LIVE        := $(BUILD)/proskrnl-liveusb.img
+
+$(IMG_LIVE_SYSTEM): $(KERNEL) $(WINFILES_DEPS) $(FULL_PAYLOAD) $(HELLOCRT) $(UPCASE) $(LOOPER) \
+        tools/mkimage.sh arch/x86_64/limine.conf \
+        $(FLASHPRESENT) $(FLASH_DLLS) $(FLASH_FIXTURES) $(FLASH_REG)
+	SIZE_MB=$${LIVE_SYSTEM_MB:-256} tools/mkimage.sh $(KERNEL) $@ $(DEVFILES)
+
+# The stick is the system disk plus 32 MiB for Limine, the kernel and FAT
+# slack. MEDIUM_ONLY: no C:\ skeleton, UEFI loader mandatory (mkimage.sh).
+$(IMG_LIVE): $(KERNEL) $(IMG_LIVE_SYSTEM) tools/mkimage.sh arch/x86_64/limine.conf
+	MEDIUM_ONLY=1 SIZE_MB=$$(( $$(wc -c < $(IMG_LIVE_SYSTEM)) / 1048576 + 32 )) \
+	    tools/mkimage.sh $(KERNEL) $@ $(IMG_LIVE_SYSTEM)=memdisk
+
+liveusb: $(IMG_LIVE)
+.PHONY: liveusb
+
 # The headless test boot (docs/08): the standard image's full [KTEST] suite,
 # verdict grepped off the serial log by tools/qemu.sh, then kmtcheck (that
 # grep names ONE line, so every suite reporting after it needs its verdict
@@ -2488,6 +2526,18 @@ rungui: $(IMG_DEV)
 	INTERACTIVE=1 GUEST_INTERACTIVE=1 GUI_DISPLAY=1 NET_USER=1 SOUND=1 \
 	    MEM=$${MEM:-1024M} tools/qemu.sh $(IMG_DEV)
 .PHONY: rungui
+
+# LIVE-1: `make rungui`'s session booted the way a real box boots the stick:
+# from USB (BOOT_MEDIUM=usb -- a usb-storage device on a qemu-xhci, no
+# virtio-blk), with a USB HID keyboard and mouse on the same controller
+# (USB_INPUT=1) and no virtio device at all -- no NIC, no sound card, since
+# the kernel drives neither off virtio. FIRMWARE=uefi tries the UEFI path.
+# The memdisk costs its size in RAM on top of the session's gigabyte. The
+# mouse is relative: click into the window to grab it (Ctrl-Alt-G releases).
+runlive: $(IMG_LIVE)
+	INTERACTIVE=1 GUEST_INTERACTIVE=1 GUI_DISPLAY=1 USB_INPUT=1 BOOT_MEDIUM=usb \
+	    MEM=$${MEM:-1536M} tools/qemu.sh $(IMG_LIVE)
+.PHONY: runlive
 
 clean:
 	rm -rf $(BUILD)
