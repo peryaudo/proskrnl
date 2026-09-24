@@ -872,6 +872,31 @@ what a real box will add is a hub in the way (the report-descriptor HID class an
 class are the two named gaps) and firmware that owns the controller (the Legacy Support
 handoff is written and unexercised under QEMU).
 
+## LIVE-1 — a live USB stick, run from a memdisk ✅
+
+The second piece of the bare-metal box: the `make rungui` session (explorer as the shell,
+the whole applet shelf) on a USB stick a human `dd`s and boots on a real PC
+(`docs/liveusb.md`). **No USB mass-storage driver**: the stick's ESP holds Limine (BIOS
+stage and `BOOTX64.EFI`), the kernel and the system disk as one file; the firmware reads it
+through its own USB stack, Limine loads it as the boot module tagged `memdisk`, and the
+kernel mounts that RAM copy as `C:` (`drivers/memdisk.c`, behind the one "which disk"
+authority `drivers/disk.c`). Writes land in RAM; the stick is never written; each boot is
+a first boot (`docs/03` "LIVE-1 notes"). `make liveusb` builds it, `make runlive` boots it
+under QEMU the way a PC does.
+**Done when:** `tests/run/run.sh liveusb` (SeaBIOS) and `liveusbuefi` (edk2) are green —
+the product stick booted as a `usb-storage` device on a `qemu-xhci` with **no virtio
+device at all**: the memdisk adopted and virtio-blk never probed, a file written on `C:`
+through a guest-only transform and read back, notepad and winemine started onto the
+desktop, `exit` powering off through S5, and the stick byte-identical afterwards. Input on
+the same configuration is its own pair of legs, one device each: `usbkbd` (letters,
+digits, Shift, Ctrl, Enter, Backspace arriving as the exact `WM_CHAR`s, in order) and
+`usbmouse` (exact relative motion, clicks routed and activating).
+
+**Done.** What a real box adds is named in `docs/liveusb.md`'s hardware table: a hub in
+front of the keyboard (USB-1's gap), PS/2 and I2C-HID input (no driver), a framebuffer
+larger than the 1280x800 desktop, and Secure Boot (Limine is unsigned). None of it is
+exercised under QEMU, and the milestone does not claim it.
+
 ## Audio path (opt-in, additive — see docs/23)
 
 Like the GUI path: outside the CUI core, subtractable, every NT-absent addition a

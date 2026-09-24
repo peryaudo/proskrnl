@@ -570,7 +570,9 @@ There are exactly TWO images. `build/proskrnl-test.hdd` is what every test leg
 boots: it carries the whole userland — CUI, desktop, applets, shell, both
 bitnesses of the WOW64 shelf, audio — plus every acceptance client and the
 whole ntapi/winetest payload. `build/proskrnl-dev.hdd` is the same userland
-without the test payload, for `make run` and `make rungui`.
+without the test payload, for `make run` and `make rungui`. (`make liveusb`
+packs that same userland onto a bootable USB-stick image that runs from RAM —
+a build of the dev image, not a third userland; `docs/liveusb.md`.)
 
 WHICH leg a boot runs is a QEMU command-line flag, not a property of the
 media: `GUEST_LEG` names the leg and `GUEST_SUBTESTS` filters the ntapi and
@@ -590,6 +592,8 @@ make fulltest # every leg CI runs, fanned out over this machine (docs/08) — th
 make run      # boot interactively: a cmd.exe prompt on your terminal ('exit' powers off)
 make rungui   # boot the windowed command prompt with a host window on the scanout,
               # a NIC on the host's network and a sound card on its speakers
+make liveusb  # build/proskrnl-liveusb.img: dd it onto a USB stick, boot a PC (docs/liveusb.md)
+make runlive  # boot that image in QEMU AS a USB stick (FIRMWARE=uefi for the UEFI path)
 tests/run/run.sh oracle     # the ntapi contracts, green against Wine/Windows ntdll
 tests/run/run.sh proskrnl   # the SAME test .exes, green ON the kernel (baked at C:\ntapi\)
 tests/run/run.sh proskrnl query_dir   # ...or one test / a glob, while iterating (both legs)
@@ -610,6 +614,9 @@ tests/run/run.sh gui5con    # GUI-5: conhost dual-mode — real user32/gdi32 com
 tests/run/run.sh wow64gui   # WOW64: a 32-bit GUI app on the same desktop, typed at that prompt
 tests/run/run.sh gui6       # GUI-6: the Wine desktop vs tests/gui/golden/desktop.ppm (exact match)
 tests/run/run.sh winetest-gui   # GUI-5: Wine's own user32:msg suite end to end, budget-ratcheted
+tests/run/run.sh usbinput   # USB-1: USB HID boot keyboard + mouse over xHCI
+tests/run/run.sh liveusb    # LIVE-1: the USB stick (SeaBIOS), C: in RAM, no virtio (liveusbuefi: edk2)
+tests/run/run.sh usbkbd     # LIVE-1: the USB keyboard alone on the live configuration (usbmouse: the mouse)
 ```
 
 ## License
