@@ -15,6 +15,8 @@
 #include "kernel/lib/dbgprint.h"
 #include "kernel/init/panic.h"
 #include "kernel/ke/ke.h"
+#include "drivers/disk.h"
+#include "drivers/memdisk.h"
 #include "drivers/virtio/blk.h"
 #include "drivers/virtio/input.h"
 #include "drivers/usb/xhci.h"
@@ -596,7 +598,15 @@ ULONG IoDrainDeviceCompletions(void)
 
 void IoInitializeTransport(void)
 {
-    if (!VioBlkInitialize())
+    /* LIVE-1: a memdisk (adopted by kernel/init/main.c from the boot
+     * module that carries it) IS the boot disk, and a boot that brought one
+     * has said so — virtio-blk stays down rather than becoming a second
+     * candidate (drivers/disk.h). */
+    if (MemDiskIsPresent())
+    {
+        DbgPrint("io: boot disk is the memdisk; virtio-blk not probed\n");
+    }
+    else if (!VioBlkInitialize())
     {
         DbgPrint("io: no boot disk; file surface disabled\n");
     }
@@ -634,7 +644,7 @@ void IoInitializeTransport(void)
 
 void IoMountBootVolume(void)
 {
-    if (!VioBlkIsPresent())
+    if (!DiskIsPresent())
     {
         return;
     }

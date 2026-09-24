@@ -37,6 +37,8 @@
 #include "drivers/nsi.h"
 #include "drivers/condrv.h"
 #include "drivers/fb.h"
+#include "drivers/disk.h"
+#include "drivers/memdisk.h"
 #include "drivers/hid.h"
 #include "drivers/usb/hidboot.h"
 #include "drivers/net/netd.h"
@@ -113,9 +115,44 @@ __attribute__((used,
                section(".limine_requests_end_marker"))) static volatile uint64_t LiRequestsEnd[2] =
     LIMINE_REQUESTS_END_MARKER;
 
+/* The cmdline that marks a boot module as the WHOLE boot disk rather than
+ * a file (LIVE-1, drivers/memdisk.h): tools/mkimage.sh's liveusb image
+ * writes it; nothing else does. */
+static BOOLEAN KiIsMemdiskModule(const struct limine_file *module)
+{
+    return module->string != 0 && KiStringEquals(module->string, "memdisk");
+}
+
+/* LIVE-1: adopt the memdisk module, if this boot carries one, as the boot
+ * disk. Before IoInitializeTransport, which leaves virtio-blk down when it
+ * finds one. More than one is a malformed medium, not a choice to make
+ * quietly. */
+static void KiAdoptMemdisk(void)
+{
+    if (LiModuleRequest.response == 0)
+    {
+        return;
+    }
+    BOOLEAN adopted = FALSE;
+    for (uint64_t i = 0; i < LiModuleRequest.response->module_count; i++)
+    {
+        struct limine_file *module = LiModuleRequest.response->modules[i];
+        if (!KiIsMemdiskModule(module))
+        {
+            continue;
+        }
+        if (adopted)
+        {
+            KiPanic("KiAdoptMemdisk: more than one memdisk module on this boot");
+        }
+        adopted = MemDiskInitialize(module->address, module->size);
+    }
+}
+
 /* Register every boot module as a RAM-disk file (M5: the seed read-only FS
  * that image and data sections map from). Call before the module runner —
- * and before the scheduler needs nothing, so early is fine. */
+ * and before the scheduler needs nothing, so early is fine. The memdisk is
+ * a disk, not a file, and is left to KiAdoptMemdisk. */
 static void KiRegisterBootModules(void)
 {
     if (LiModuleRequest.response == 0)
@@ -125,6 +162,10 @@ static void KiRegisterBootModules(void)
     for (uint64_t i = 0; i < LiModuleRequest.response->module_count; i++)
     {
         struct limine_file *module = LiModuleRequest.response->modules[i];
+        if (KiIsMemdiskModule(module))
+        {
+            continue;
+        }
         const char *path = module->path != 0 ? module->path : "?";
         if (KiRegisterRamdiskFile(path, module->address, module->size) == 0)
         {
@@ -596,9 +637,22 @@ static void KiTestMainThread(void *context)
     /* The CUI-8 machine verdicts (docs/19 §8.3/§8.4): progress while a
      * transfer is parked, the depth floor, in-flight cancellation. After
      * M6 (the volume and the Nt* file surface it drives are up). */
-    int cui8Failures = kmt_run_cui8();
-    DbgPrint(cui8Failures == 0 ? "[KTEST] CUI8 PASS\n" : "[KTEST] CUI8 FAIL failures=%d\n",
-             cui8Failures);
+    /* Every one of those verdicts is about a transfer IN FLIGHT on the
+     * virtio-blk queue. A boot disk with no queue -- the memdisk (LIVE-1),
+     * whose transfers are copies finished before they could be queued
+     * (drivers/disk.h) -- has no such window to hold open, so the suite has
+     * nothing to judge there and says so instead of passing vacuously. */
+    int cui8Failures = 0;
+    if (DiskIsQueued())
+    {
+        cui8Failures = kmt_run_cui8();
+        DbgPrint(cui8Failures == 0 ? "[KTEST] CUI8 PASS\n" : "[KTEST] CUI8 FAIL failures=%d\n",
+                 cui8Failures);
+    }
+    else
+    {
+        DbgPrint("[KTEST] CUI8 SKIP (the boot disk has no queue)\n");
+    }
     KiVerifyKernelState();
 
     /* The CUI-9 shared-master verdicts (docs/17 §8): the sharing metric and
@@ -829,6 +883,7 @@ void KiSystemStartup(void)
     /* M6 phase 1: probe virtio-blk and map its MMIO window. Must precede
      * Ps: the window may claim a fresh kernel PML4 slot, and
      * MiFreezeKernelPml4 happens inside PsInitializeProcessSubsystem. */
+    KiAdoptMemdisk();
     IoInitializeTransport();
     DbgPrint("[KTEST] io PASS\n");
 

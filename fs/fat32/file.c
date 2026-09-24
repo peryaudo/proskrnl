@@ -8,6 +8,7 @@
  */
 #include "fs/fat32/fat.h"
 #include "kernel/init/profile.h"
+#include "drivers/disk.h"       /* LIVE-1: which disk, and whether it queues */
 #include "drivers/virtio/blk.h" /* CUI-8: batched direct-DMA page transfers */
 #include "kernel/io/io.h"
 #include "kernel/mm/pool.h"
@@ -99,9 +100,17 @@ static NTSTATUS FatBatchTransfer(FAT_IO_BATCH *batch, BOOLEAN isWrite, PFAT_VOLU
      * through the batch and nowhere else — would be invisible in the sector
      * totals and only the (single-sector) directory traffic would show. */
     KiProfileCount(isWrite ? KiProfileBlockWrite : KiProfileBlockRead, sectorCount);
+    uint64_t lba = volume->partitionFirstLba + sector;
+    /* LIVE-1: a boot disk with no queue (the memdisk) has nothing to
+     * overlap — its transfer is a copy that completes here, so the batch
+     * stays empty and its flush has nothing to await. */
+    if (!DiskIsQueued())
+    {
+        return isWrite ? DiskWriteSectorsPhysical(lba, sectorCount, physical)
+                       : DiskReadSectorsPhysical(lba, sectorCount, physical);
+    }
     /* Stage only — the device sees the whole batch at the flush. */
     VIO_BLK_REQUEST *request = &batch->requests[batch->count];
-    uint64_t lba = volume->partitionFirstLba + sector;
     if (isWrite)
     {
         VioBlkPrepareWrite(request, lba, sectorCount, physical);

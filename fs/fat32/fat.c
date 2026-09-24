@@ -9,7 +9,7 @@
  */
 #include "fs/fat32/fat.h"
 #include "kernel/io/io.h"
-#include "drivers/virtio/blk.h"
+#include "drivers/disk.h"
 #include "kernel/mm/pool.h"
 #include "kernel/ke/ke.h"
 #include "kernel/lib/le.h"
@@ -57,27 +57,27 @@ NTSTATUS FatReadSector(PFAT_VOLUME volume, uint64_t sector, void *buffer)
 {
     KiProfileCount(KiProfileBlockRead, 1);
     KiProfileCount(KiProfileMetaRead, 1);
-    return VioBlkReadSectors(volume->partitionFirstLba + sector, 1, buffer);
+    return DiskReadSectors(volume->partitionFirstLba + sector, 1, buffer);
 }
 
 NTSTATUS FatWriteSector(PFAT_VOLUME volume, uint64_t sector, const void *buffer)
 {
     KiProfileCount(KiProfileBlockWrite, 1);
-    return VioBlkWriteSectors(volume->partitionFirstLba + sector, 1, buffer);
+    return DiskWriteSectors(volume->partitionFirstLba + sector, 1, buffer);
 }
 
 NTSTATUS FatReadSectorsPhysical(PFAT_VOLUME volume, uint64_t sector, uint32_t sectorCount,
                                 uint64_t physical)
 {
     KiProfileCount(KiProfileBlockRead, sectorCount);
-    return VioBlkReadSectorsPhysical(volume->partitionFirstLba + sector, sectorCount, physical);
+    return DiskReadSectorsPhysical(volume->partitionFirstLba + sector, sectorCount, physical);
 }
 
 NTSTATUS FatWriteSectorsPhysical(PFAT_VOLUME volume, uint64_t sector, uint32_t sectorCount,
                                  uint64_t physical)
 {
     KiProfileCount(KiProfileBlockWrite, sectorCount);
-    return VioBlkWriteSectorsPhysical(volume->partitionFirstLba + sector, sectorCount, physical);
+    return DiskWriteSectorsPhysical(volume->partitionFirstLba + sector, sectorCount, physical);
 }
 
 BOOLEAN FatIsDataCluster(PFAT_VOLUME volume, ULONG cluster)
@@ -535,7 +535,7 @@ LARGE_INTEGER FatCurrentNtTime(void)
 static NTSTATUS FatFindDataPartition(uint64_t *firstLbaOut)
 {
     unsigned char sector[FAT_SECTOR_SIZE];
-    NTSTATUS status = VioBlkReadSectors(1, 1, sector);
+    NTSTATUS status = DiskReadSectors(1, 1, sector);
     if (!NT_SUCCESS(status))
     {
         return status;
@@ -566,7 +566,7 @@ static NTSTATUS FatFindDataPartition(uint64_t *firstLbaOut)
     {
         if (index % perSector == 0)
         {
-            status = VioBlkReadSectors(entryArrayLba + index / perSector, 1, sector);
+            status = DiskReadSectors(entryArrayLba + index / perSector, 1, sector);
             if (!NT_SUCCESS(status))
             {
                 return status;
@@ -694,7 +694,7 @@ NTSTATUS FatMountBootVolume(PFAT_VOLUME *volumeOut)
     }
 
     unsigned char boot[FAT_SECTOR_SIZE];
-    status = VioBlkReadSectors(partitionLba, 1, boot);
+    status = DiskReadSectors(partitionLba, 1, boot);
     if (!NT_SUCCESS(status))
     {
         return status;
