@@ -498,6 +498,58 @@ jobs:
         with:
           shard: gui
 
+  # LIVE-1: the machine with NO virtio device -- the product USB stick booted
+  # as a usb-storage device on a qemu-xhci, C: held in RAM (the memdisk), and
+  # the USB HID input legs on that same configuration. Its own shard rather
+  # than four more boots on the gui one, which is already at its cap: two
+  # virgin desktop boots (every live boot pays firstboot) and two warm ones.
+  live:
+    needs: setup
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/third-party
+
+      # The stick through SeaBIOS and through edk2: memdisk adopted, virtio-blk
+      # never probed, a write on C: read back, two applets up, S5, and the
+      # stick byte-identical afterwards.
+      - name: "LIVE-1 USB stick, SeaBIOS (tests/run/run.sh liveusb)"
+        if: ${{ !cancelled() }}
+        run: tests/run/run.sh liveusb
+        env:
+          TIMEOUT: "1800"
+          EXPECT_DEADLINE: "1500"
+
+      - name: "LIVE-1 USB stick, UEFI (tests/run/run.sh liveusbuefi)"
+        if: ${{ !cancelled() }}
+        run: tests/run/run.sh liveusbuefi
+        env:
+          TIMEOUT: "1800"
+          EXPECT_DEADLINE: "1500"
+
+      # USB-1's drive on the live configuration, one device per leg: the
+      # keyboard's keys as exact WM_CHARs in order; the mouse's exact relative
+      # motion and routed clicks.
+      - name: "USB HID boot keyboard, live stick, no virtio (tests/run/run.sh usbkbd)"
+        if: ${{ !cancelled() }}
+        run: tests/run/run.sh usbkbd
+        env:
+          TIMEOUT: "1200"
+          GUI_DEADLINE: "900"
+
+      - name: "USB HID boot mouse, live stick, no virtio (tests/run/run.sh usbmouse)"
+        if: ${{ !cancelled() }}
+        run: tests/run/run.sh usbmouse
+        env:
+          TIMEOUT: "1200"
+          GUI_DEADLINE: "900"
+
+      - uses: ./.github/actions/serial-logs
+        if: failure()
+        with:
+          shard: live
+
   # GUI-5's trophy: Wine's own user32:msg — 21.5 kloc, ~85 test functions —
   # over the full GUI stack, with the failure count ratcheted against
   # the msg pair's budget field in tests/winetest/manifest-gui.txt (docs/03
@@ -545,7 +597,7 @@ jobs:
   # shard reports its own result on the PR regardless; this job only decides
   # which of them stop a merge.
   all-green:
-    needs: [style, setup, boot, oracle, ntapi, cui-a, cui-b, gui, msg]
+    needs: [style, setup, boot, oracle, ntapi, cui-a, cui-b, gui, live, msg]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10
